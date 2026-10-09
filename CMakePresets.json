@@ -1,0 +1,66 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 22,
+    "patch": 0
+  },
+  "vendor": {
+    "aegis-ota.local/notes/1.0": {
+      "purpose": "Lưu các lệnh configure/build chuẩn để không phải gõ lại generator, toolchain, build type và thư mục output.",
+      "usage": "Chạy 'cmake --preset debug' rồi 'cmake --build --preset debug'; thay debug bằng release khi tạo bản tối ưu.",
+      "rule": "Không thêm comment // hoặc /* */ vào file này vì CMakePresets.json phải là JSON hợp lệ."
+    }
+  },
+  "configurePresets": [
+    {
+      "name": "stm32-base",
+      "hidden": true,
+      "displayName": "STM32F103 base",
+      "description": "Preset nền dùng chung: chọn Ninja, ARM GNU Toolchain và thư mục build riêng cho từng preset.",
+      "generator": "Ninja",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi-toolchain.cmake",
+      "binaryDir": "${sourceDir}/build/${presetName}"
+    },
+    {
+      "name": "debug",
+      "inherits": "stm32-base",
+      "displayName": "STM32F103 Debug",
+      "description": "Configure firmware có symbol -g3, tối ưu -Os và LTO để representative Bootloader vẫn fit đúng partition 16 KB.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "stm32-base",
+      "displayName": "STM32F103 Release",
+      "description": "Configure firmware tối ưu dung lượng bằng -Os và LTO để đo size và tạo artifact phát hành.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "displayName": "Build STM32F103 Debug",
+      "description": "Build target tổng firmware, gồm cả aegis_bootloader và aegis_application ở profile Debug.",
+      "configurePreset": "debug",
+      "targets": [
+        "firmware"
+      ],
+      "jobs": 0
+    },
+    {
+      "name": "release",
+      "displayName": "Build STM32F103 Release",
+      "description": "Build target tổng firmware, gồm cả aegis_bootloader và aegis_application ở profile Release.",
+      "configurePreset": "release",
+      "targets": [
+        "firmware"
+      ],
+      "jobs": 0
+    }
+  ]
+}

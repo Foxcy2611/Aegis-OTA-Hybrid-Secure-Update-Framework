@@ -1,0 +1,10 @@
+menu "Aegis Phase 4 link test"
+
+    config AEGIS_PHASE4_ROUNDS
+        int "Số vòng chạy bộ payload 0/1/255/256"
+        range 1 10000
+        default 20
+        help
+            Một vòng gửi bốn packet. Tăng giá trị để chạy soak test dài.
+
+endmenu

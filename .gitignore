@@ -1,0 +1,16 @@
+# CMake/Ninja outputs
+/build/
+/dist/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# ESP-IDF local outputs
+/esp32_gateway/build/
+/esp32_gateway/sdkconfig
+/esp32_gateway/sdkconfig.old
+
+# Local editor/log artifacts
+*.log
+*.su

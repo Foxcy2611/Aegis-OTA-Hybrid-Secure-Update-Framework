@@ -1,0 +1,45 @@
+{
+    "version": 4,
+    "configurations": [
+        {
+            "name": "STM32F103 (ARM GCC)",
+            "compilerPath": "/usr/bin/arm-none-eabi-gcc",
+            "compilerArgs": ["-mcpu=cortex-m3", "-mthumb", "-mfloat-abi=soft"],
+            "intelliSenseMode": "gcc-arm",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "compileCommands": "${workspaceFolder}/build/debug/compile_commands.json",
+            "defines": [
+                "STM32F10X_MD", 
+                "USE_STDPERIPH_DRIVER", 
+                "HSE_VALUE=8000000",
+                "PHASE1_TEST_GROUP=0"
+            ],
+            "includePath": [
+                "${workspaceFolder}/bootloader/inc",
+                "${workspaceFolder}/bootloader/src",
+                "${workspaceFolder}/driver/inc",
+                "${workspaceFolder}/driver/src",
+                "${workspaceFolder}/application/inc",
+                "${workspaceFolder}/application/src",
+                "${workspaceFolder}/common/inc",
+                "${workspaceFolder}/shared",
+                "${workspaceFolder}/libraries/Template",
+                "${workspaceFolder}/libraries/CMSIS/CM3/CoreSupport",
+                "${workspaceFolder}/libraries/CMSIS/CM3/DeviceSupport",
+                "${workspaceFolder}/libraries/STM32F10x_StdPeriph_Driver/inc",
+                "${workspaceFolder}/libraries/Third_Party"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/bootloader",
+                    "${workspaceFolder}/application",
+                    "${workspaceFolder}/common",
+                    "${workspaceFolder}/shared",
+                    "${workspaceFolder}/libraries"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            }
+        }
+    ]
+}

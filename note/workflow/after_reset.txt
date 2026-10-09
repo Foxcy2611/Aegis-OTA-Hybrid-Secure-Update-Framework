@@ -1,0 +1,19 @@
+Reset
+  ↓
+BootMetadata_Init()
+  ├─ đọc Metadata A/B
+  └─ chọn record active
+  ↓
+Các module khác kiểm tra
+  ├─ Application hợp lệ?
+  ├─ Staging hợp lệ?
+  ├─ Backup hợp lệ?
+  └─ UPDATE_READY/mailbox hợp lệ?
+  ↓
+Ghép thành BootState_Input_t
+  ↓
+BootState_Decide()
+  ↓
+Trả về Boot_Action_t
+  ↓
+switch(action) thực thi

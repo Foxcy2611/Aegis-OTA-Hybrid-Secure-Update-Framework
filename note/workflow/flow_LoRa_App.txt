@@ -1,0 +1,17 @@
+ESP32/LoRa gửi firmware
+        ↓
+Application nhận fragment
+        ↓
+artifact_storage ghi Staging Image
+        ↓
+read-back thành công
+        ↓
+clear một bit trong progress bitmap
+        ↓
+nhận đủ + crypto PASS
+        ↓
+ghi artifact-valid marker
+        ↓
+reset sang Bootloader
+        ↓
+Bootloader verify lại rồi cài vào Internal Application

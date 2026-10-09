@@ -1,0 +1,20 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "STM32: Build PC13 demo",
+            "type": "shell",
+            "command": "make",
+            "options": {"cwd": "${workspaceFolder}/Bootloader/Demo_PC13"},
+            "group": {"kind": "build", "isDefault": true},
+            "problemMatcher": "$gcc"
+        },
+        {
+            "label": "STM32: Clean PC13 demo",
+            "type": "shell",
+            "command": "make clean",
+            "options": {"cwd": "${workspaceFolder}/Bootloader/Demo_PC13"},
+            "problemMatcher": []
+        }
+    ]
+}

@@ -1,0 +1,80 @@
+1. Staging Manifest là “phiếu mô tả + sổ tiến độ” của firmware nằm ngay sau nó trong Staging Image
+
+W25Q32 Staging 256 KB
+
+0x000000 ┌──────────────────────────┐
+         │ Staging Manifest 4 KB    │
+         │ - firmware nào?          │
+         │ - kích thước bao nhiêu?  │
+         │ - chữ ký nào?            │
+         │ - đã nhận tới đâu?       │
+0x001000 ├──────────────────────────┤
+         │ Staging Image 252 KB     │
+         │ raw firmware bytes       │
+0x040000 └──────────────────────────┘
+
+2. Tại sao artifact_storage dùng manifest nhiều?
+Vì artifact_storage không thể chỉ ghi firmware rồi “nhớ bằng RAM”. 
+Nếu STM32 reset hoặc mất điện, toàn bộ biến RAM mất hết. Manifest giúp Application biết:
+- firmware đang nhận là firmware nào;
+- transaction và phiên truyền nào;
+- kích thước firmware;
+- kích thước mỗi fragment;
+- tổng số fragment;
+- fragment nào đã ghi thành công;
+- SignedHeader và chữ ký của candidate;
+- header đã commit hoàn chỉnh chưa;
+- toàn artifact đã được verify chưa.
+
+3. Luồng đúng khi Application nhận firmware mới
+
+Nhận BEGIN từ ESP32
+        ↓
+Kiểm tra request và secure frame
+        ↓
+Đọc Staging Manifest hiện tại
+        ↓
+Manifest có cùng operation/transfer/artifact?
+        ├─ Có  → resume theo progress bitmap
+        └─ Không
+             ↓
+          Invalidate manifest cũ
+             ↓
+          Erase Staging Image cần dùng
+             ↓
+          Tạo manifest mới
+             ↓
+          Ghi header commit marker
+
+Sau đó mới nhận từng fragment:
+
+Nhận DATA fragment
+        ↓
+Kiểm offset và length
+        ↓
+Kiểm progress bitmap
+        ↓
+Program vào Staging Image
+        ↓
+Read-back đúng?
+        ├─ Không → trả lỗi, không sửa bitmap
+        └─ Có
+             ↓
+          Clear progress bit
+             ↓
+          Gửi ACK committed
+
+Khi nhận đủ
+Tất cả progress bit cần thiết đã clear
+        ↓
+Application kiểm CRC/chữ ký sơ bộ
+        ↓
+Ghi artifact-valid marker
+        ↓
+Chuẩn bị Backup App cũ
+        ↓
+Ghi UPDATE_READY và reset
+        ↓
+Bootloader tự verify lại
+        ↓
+Bootloader mới quyết định install

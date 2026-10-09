@@ -1,0 +1,2008 @@
+# AEGIS-OTA — TUTORIAL LORA P2P + DELTA
+
+> **Tác dụng:** Là lộ trình canonical để triển khai và nghiệm thu Aegis-OTA theo đúng dependency.
+
+> **Phạm vi:** Toàn bộ tiến trình LoRa P2P + FULL/Delta OTA từ contract Phase 0
+> đến release acceptance Phase 8.
+
+> Production final-first / clean-slate roadmap
+
+## TÀI LIỆU CANONICAL SAU KHI KHỞI ĐỘNG LẠI DỰ ÁN
+
+- Target phần cứng được chốt: STM32F103C8T6 với 64 KB Internal Flash.
+- `tutorial_lora_delta_p2p_final_synced.txt` là roadmap canonical/kim chỉ nam cuối của nhánh
+  LoRa P2P + Delta.
+- `tutorial_lora_delta_p2p_final_synced.md` là bản trình bày/đọc nhanh mirror từ roadmap canonical;
+  nếu hai file khác nội dung thì `.txt` là source of truth và phải đồng bộ lại `.md`.
+- Các deliverable mới được Roadmap trỏ tới, bắt đầu bằng
+  `Docs/system-scope.md`, cũng có hiệu lực.
+- `Docs/*.md` là các đặc tả dẫn xuất để thiết kế/review/validation. Khi khác
+  roadmap canonical, roadmap canonical được ưu tiên và tài liệu dẫn xuất phải
+  được đồng bộ trước khi code.
+
+## TRẠNG THÁI ROADMAP
+
+  Phase 0: PASS — contract final-first và representative feasibility đã khóa.
+  Phase 1: PENDING HARDWARE — source đã có, nghiệm thu board chưa chạy.
+  Phase 2: PENDING HARDWARE — source đã có, thiếu nghiệm thu W25Q32 thật.
+  Phase 3: PASS — crypto contract/service, verifier, signer và host regression.
+  Phase 4: PENDING HARDWARE — source/host/ARM đã có; thiếu ESP-IDF build và RF evidence.
+  Phase 5..8: PENDING HARDWARE — source mẫu và host gate đã có; chưa có E2E/RF evidence.
+
+  Evidence chỉ được dùng để đánh PASS khi được tạo từ đúng ownership, persistent
+  format, wire format và source revision của roadmap này. Hardware chưa chạy được
+  ghi PENDING HARDWARE, không thay bằng compile hoặc RAM mock.
+
+## Bảng tick tiến độ Phase
+
+| Tick | Phase | Trạng thái / phạm vi |
+|---|---|---|
+| [x] | 0 | Contract final-first và feasibility — PASS |
+| [ ] | 1 | Internal Flash, Metadata v2, boot decision và mailbox — PENDING HARDWARE |
+| [ ] | 2 | W25Q32 driver, manifests và storage — PENDING HARDWARE |
+| [x] | 3 | Crypto, signer và golden vectors — PASS |
+| [ ] | 4 | AS32/UART và link LoRa P2P thô — PENDING HARDWARE |
+| [ ] | 5 | Reliable OTA protocol và ESP32 Gateway — PENDING HARDWARE |
+| [ ] | 6 | FULL OTA, install, Trial Boot và rollback — PENDING HARDWARE |
+| [ ] | 7 | Delta package và Application streaming applier — PENDING HARDWARE |
+| [ ] | 8 | P2P final acceptance — PENDING HARDWARE |
+
+Khi mở project ở buổi mới, bắt đầu bằng cách đọc trạng thái này, sau đó đọc
+“Điều kiện trước khi làm” của đúng checkpoint tiếp theo. Không tự nhảy sang mục
+sau chỉ vì source đã compile; checkpoint phải đạt đúng phần “Điểm dừng”.
+
+## 0. CÁCH LÀM CỦA BẢN V2
+
+Mục tiêu không phải là tạo các phase demo độc lập rồi xoá/viết lại chúng. Mục tiêu
+là đi từ contract cuối cùng đến firmware cuối cùng, theo từng lát cắt nhỏ có thể
+test. Sau mỗi phase, source vừa viết vẫn phải được dùng trong phase sau.
+
+Quy tắc làm việc:
+
+- Chốt interface, persistent format và wire format trước implementation.
+- Mỗi module production có một trách nhiệm. Không biến test thành một module khác
+  với code thật.
+- Test host/board được giữ lại như regression. Khi refactor, sửa test để gọi API
+  cuối cùng, không xoá test đã từng chứng minh một lỗi.
+- Không có W25Q32/ESP32 thì để test hardware PENDING; không nhét RAM mock vào
+  Bootloader để giả vờ đã xong.
+- Không tạo parser OTA plaintext tạm. UART đầu tiên đã nhận đúng secure frame.
+- Private key chỉ ở máy release/CI an toàn, không commit vào repo và không flash
+  vào STM32.
+- Mọi vòng chờ phần cứng hoặc dữ liệu bên ngoài phải có timeout và trả status.
+  Vòng `for(;;)`/`WFI` cố ý giữ CPU ở idle hoặc recovery không thuộc quy tắc này.
+- Một phase chỉ có một thư mục regression chính trong `test/Test_to_Phase/`.
+  Thư mục đó có thể tạo cả executable host và firmware board; không tách mỗi
+  checkpoint thành một project test mới.
+
+
+## 1. LAYOUT CUỐI CÙNG CỦA REPOSITORY
+
+~~~text
++ CMakeLists.txt         điều phối toàn bộ target STM32
++ CMakePresets.json      preset Ninja cho Debug/Release/host test
++ cmake/
+  arm-none-eabi-toolchain.cmake chọn ARM GCC/binutils trước project()
+  stm32f103_options.cmake       CPU/ABI/define/warning policy dùng chung
+  firmware_helpers.cmake       linker/output/size/disassembly/flash helpers
+
++ Bootloader/
+  + Inc/                         API nội bộ/public của bootloader
+  + Src/                         implementation production
+  + linker_bootloader.ld         image đặt tại 0x08000000
+  + CMakeLists.txt                target aegis_bootloader
+
++ Application/
+  + Inc/
+  + Src/                         application + health confirmation + IWDG
+  + linker_application.ld        image đặt tại 0x08004000
+  + CMakeLists.txt                target aegis_application
+
++ Shared/
+  + CMakeLists.txt                INTERFACE target cho contract/header
+  + memory_map.h                 toàn bộ địa chỉ dùng chung
+  + firmware_format.h            SignedHeader/signature byte contract
+  + metadata_struct.h            layout metadata persistent
+  + ota_protocol.h               OTA command/model plaintext nội bộ
+  + crypto_config.h              secure wire/key/algorithm constants
+  + delta_format.h               byte contract khóa ở Phase 0; engine thêm ở Phase 7
+
++ Common/
+  + CMakeLists.txt                source dùng chung cho hai firmware image
+  + startup_stm32f103_md.s       chỉ một startup đúng biến thể MCU
+
++ Driver/
+  + CMakeLists.txt                driver target tách theo ownership Boot/App
+  + uart_dma.*                   DMA/ring buffer UART
+  + timebase.*                   SysTick 1 ms cho timeout hữu hạn
+  + ext_flash.*                  driver W25Q32 theo offset tuyệt đối
+
++ Libraries/Third_Party/Monocypher/
+  + CMakeLists.txt                third-party crypto target
+                                Monocypher pin 4.0.3, giữ UPSTREAM.md/LICENSE
+
++ ESP32_Gateway/                  project CMake ESP-IDF độc lập / OTA sender
++ tools/                          sign_firmware.py, make_delta.py, recovery_tool.py
++ Test/host_test/                 unit test nhỏ dùng lại giữa nhiều phase nếu cần
+test/Test_to_Phase/PhaseN_Board/
+                                CMake regression chính; có host + board target
+Docs/Roadmap/                   tutorial_lora_delta_p2p_final_synced.txt canonical; .md mirror
+~~~
+
+- Chỉ Test/ mới được có fixture, fake transport hoặc mock. Production không include
+header mock và không phụ thuộc vào Test/.
+- Tên thư mục production là `Driver/` số ít. Không tạo thêm `Drivers/`
+  song song vì sẽ làm CMake target/source/include graph lệch nhau.
+- STM32 được configure bằng ARM toolchain + Ninja; ESP32 được configure riêng qua
+  ESP-IDF. Không add project ESP32 vào cùng build tree/toolchain STM32.
+
+## 2. CHỐT CÁC CONTRACT KHÔNG ĐƯỢC THAY ĐỔI TUỲ TIỆN
+
+### 2.1. Internal flash STM32F103 64 KB
+
+- Bootloader:  0x08000000 .. 0x08003FFF  (16 KB)
+- Application: 0x08004000 .. 0x0800F7FF  (46 KB)
+- Metadata A:  0x0800F800 .. 0x0800FBFF  (1 KB)
+- Metadata B:  0x0800FC00 .. 0x0800FFFF  (1 KB)
+
+Application linker phải đặt vector table ở APP_BASE. Bootloader không được ghi
+vào metadata bằng code application; mọi write metadata đi qua boot metadata API.
+
+### 2.2. External flash W25Q32
+
+W25Q32 có dung lượng 4 MB (0x400000 byte):
+
+- STAGING AREA:      0x000000 .. 0x03FFFF, size 0x40000  (256 KB)
+- BACKUP SLOT:       0x040000 .. 0x07FFFF, size 0x40000  (256 KB)
+- DELTA AREA:        0x080000 .. 0x0BFFFF, size 0x40000  (256 KB)
+- RESERVED:          0x0C0000 .. 0x3FFFFF, size 0x340000 (3.25 MB)
+
+Trong RESERVED:
+
+- SESSION JOURNAL:   0x0C0000 .. 0x0CFFFF, size 0x10000  (64 KB)
+- FUTURE RESERVED:   0x0D0000 .. 0x3FFFFF, size 0x330000 (3.1875 MB)
+
+Mỗi vùng chức năng dành sector 4 KB đầu cho manifest:
+
+- STAGING_MANIFEST_BASE: 0x000000, size 0x01000  (4 KB)
+- STAGING_IMAGE_BASE:    0x001000, size 0x3F000  (252 KB)
+
+- BACKUP_MANIFEST_BASE:  0x040000, size 0x01000  (4 KB)
+- BACKUP_IMAGE_BASE:     0x041000, size 0x3F000  (252 KB)
+
+- DELTA_MANIFEST_BASE:  0x080000, size 0x01000  (4 KB)
+- DELTA_DATA_BASE:      0x081000, size 0x3F000  (252 KB)
+
+FULL receiver ghi raw firmware vào STAGING_IMAGE. Delta receiver ghi patch vào DELTA_DATA; Application applier reconstruct full target sang STAGING_IMAGE. Không
+patch trực tiếp Application.
+
+Backup manifest là bản ghi cam kết độc lập: magic, format version, image size,
+CRC/hash/signature cần thiết và commit marker. Nó chỉ chuyển sang VALID sau khi
+toàn bộ backup image đã được ghi và verify. Vì vậy nếu mất điện khi backup dở,
+bootloader biết chắc không dùng backup đó để rollback.
+
+Manifest chiếm riêng một sector erase 4 KB của W25Q32 để có thể invalidate hoặc
+commit trạng thái backup mà không erase/chạm vào các byte firmware đã copy.
+
+Staging/Delta manifest giữ transfer/artifact identity, signed data, progress và
+commit marker. Application Update Agent erase/write/commit các record này;
+Bootloader chỉ đọc và verify Staging/Backup độc lập.
+
+Staging, Backup và Delta là ba workspace artifact độc lập. Session Journal là
+append-only chống replay; phần Future Reserved còn lại không được tự ý sử dụng.
+
+### 2.3. Metadata persistent
+
+Metadata A/B dùng record v2 đúng 128 bytes: magic/version/generation,
+operation_state, trial/count, operation_id, active SignedHeader/signature, CRC và
+commit marker. Internal operation chỉ gồm IDLE, INSTALL_IN_PROGRESS và
+ROLLBACK_IN_PROGRESS. Delta apply state/progress nằm trong W25 manifest.
+
+Bootloader đọc/validate cả A và B rồi chọn generation hợp lệ mới nhất. Mỗi page
+1 KB chỉ chứa một record 128 bytes ở đầu page. Active SignedHeader/signature phải
+được giữ vì Internal App chỉ chứa raw firmware; cặp này cho phép Bootloader verify
+App độc lập sau reset và không phải chữ ký của toàn bộ record metadata. Không rút
+field signature: tiết kiệm 64 bytes không thu hồi page Flash và sẽ làm mất bằng
+chứng xác thực App hoặc tạo dependency vào W25Q32 khi boot.
+
+Decision ngay sau reset:
+
+  FIRST_BOOT chưa provision/corrupt     -> locked Recovery qua ST-Link
+  install dở + staging hợp lệ          -> tiếp tục install
+  install dở + staging lỗi + backup tốt -> rollback
+  rollback đang dở + backup tốt        -> tiếp tục rollback
+  app lỗi hoặc trial hết lượt + backup tốt -> rollback
+  UPDATE_READY + staging/backup hợp lệ  -> install
+  không còn image khôi phục hợp lệ      -> locked Recovery qua ST-Link
+  còn lại                              -> jump application
+
+### 2.4. Secure UART wire format
+
+Một frame vật lý duy nhất:
+
+  SYNC(2) | SESSION_ID(8) | FRAME_COUNTER(4) | TYPE(1) | SEQ(2) | LEN(2)
+  | CIPHERTEXT(LEN) | TAG(16) | CRC32(4)
+
+Tất cả số nhiều byte dùng little-endian.
+
+- CRC32 bao phủ SESSION_ID đến hết TAG, chỉ phát hiện lỗi truyền/đồng bộ nhanh.
+- ChaCha20 mã hoá payload.
+- Poly1305 tạo TAG 16 byte, chứng minh frame không bị sửa và biết key.
+- Nonce 12 byte = SESSION_ID (8) + FRAME_COUNTER (4).
+- AAD = TYPE + SEQ + LEN. Các byte này không mã hoá nhưng bị TAG bảo vệ.
+- ESP32 tạo SESSION_ID ngẫu nhiên mới cho mỗi OTA session.
+- FRAME_COUNTER tăng đơn điệu, có hai domain khác nhau Host->Device và
+  Device->Host. Không dùng SEQ làm counter: SEQ có thể được resend vì sliding
+  window, counter thì không được lặp.
+
+### 2.5. Firmware authentication
+
+`Firmware_SignedHeader_t` là đúng 32 byte, chứa domain/project, format, version,
+image size, CRC32 và các trường đã chốt. Nội dung ký là:
+
+  SHA-512( signed_header_32_bytes || firmware_binary )
+
+Host tạo chữ ký Ed25519ph bằng private key. Application kiểm sơ bộ; Bootloader
+đọc Staging từng block, tự băm lại và verify bằng public key provision trong
+Bootloader. CRC của image
+vẫn hữu ích để phát hiện lỗi ngẫu nhiên; Ed25519 mới chứng minh image do release
+authority phát hành.
+
+Phân biệt ba giá trị độc lập:
+
+- SHA-512 tạo digest đúng 64 byte.
+- Ed25519ph dùng prehash SHA-512 và tạo signature đúng 64 byte; STM32 tự tính lại
+  prehash rồi dùng public key để verify signature.
+- Transport key là symmetric key dùng cho ChaCha20-Poly1305 để decrypt/xác thực
+  frame P2P. Transport key không tham gia và không được “đối chiếu” với public key.
+
+Với target firmware, prehash ký vẫn là:
+
+  SHA-512( signed_header_32_bytes || firmware[0 .. image_size-1] )
+
+Không tin digest do sender gửi thay cho việc STM32 tự đọc STAGING và tính lại.
+
+
+## 3. CÁCH DÙNG TUTORIAL THEO TỪNG BUỔI
+
+Mỗi lần chỉ chọn đúng một mục x.y và làm theo thứ tự dưới đây.
+
+Bước 1 — Xác nhận điểm bắt đầu
+  - Đọc “TRẠNG THÁI TIẾP TỤC HIỆN TẠI”.
+  - Kiểm tra checkpoint đứng trước đã PASS, hoặc được phép PENDING theo bảng phụ
+    thuộc bên dưới.
+  - Không dùng source trong `Shared/Logic_cu/` làm bản chính.
+
+Bước 2 — Đọc contract trước khi code
+  - Đọc `Shared/memory_map.h` nếu đụng Flash/address/size.
+  - Đọc header của module ngay phía dưới và phía trên trong dependency chain.
+  - Nếu persistent hoặc wire format chưa chốt thì dừng, chốt format trước.
+
+Bước 3 — Xác nhận môi trường
+  - Host test: compiler/tool dependency phải có.
+  - Board test: đúng board, nguồn 3.3 V, GND chung, ST-Link attach và SWD kết nối.
+  - Test có erase Flash phải biết chính xác vùng bị xóa và đã chấp nhận mất dữ liệu.
+  - Thiếu hardware thì ghi PENDING; không thay production bằng RAM mock.
+
+Bước 4 — Ghi code production
+  - Chỉ sửa module thuộc checkpoint và dependency thật sự cần thiết.
+  - Mọi API blocking phải có timeout/status; mọi range dùng cách check không tràn.
+  - Không hardcode address đã có trong `memory_map.h` hoặc chân đã có trong
+    `pinout_hw.h`.
+
+Bước 5 — Thêm vào regression của phase
+  - Test gọi đúng source production.
+  - Fake/mock chỉ nằm trong `Test/`.
+  - Mỗi case có expected rõ; board harness giữ kết quả trong biến `volatile` để
+    GDB đọc khi không có UART log.
+
+Bước 6 — Nghiệm thu và ghi tiến độ
+  - Build sạch với `-Wall -Wextra -Werror`.
+  - Chạy đúng “Kiểm tra”; build pass không thay cho hardware pass.
+  - Chỉ ghi PASS khi đạt “Điểm dừng”. Nếu chưa có phần cứng ghi PENDING + lý do.
+  - Ghi command, số test, output và checkpoint tiếp theo theo mẫu cuối tài liệu.
+
+Trạng thái checkpoint chỉ dùng các giá trị:
+
+  NOT STARTED       chưa bắt đầu.
+  IN PROGRESS       đang viết hoặc đang sửa test.
+  PASS              source + test + evidence đã đạt.
+  PENDING HARDWARE  code/test build được nhưng chưa chạy trên chip thật.
+  BLOCKED           dependency bắt buộc chưa đạt, không được đi tiếp nhánh này.
+
+## BẢNG PHỤ THUỘC TRƯỚC KHI BẮT ĐẦU
+
+  0.1  Không có dependency code; chốt target, scope và ownership.
+  0.2  Cần 0.1; chốt artifact và toàn bộ memory map.
+  0.3  Cần 0.2; chốt metadata/manifest state và commit contract.
+  0.4  Cần 0.2 + 0.3; chốt receive/progress/resume.
+  0.5  Cần 0.4; chốt secure frame, command và key/session lifecycle.
+  0.6  Cần 0.3; chốt UPDATE_READY/TRIAL_CONFIRM mailbox.
+  0.7  Cần 0.1; chốt AS32/W25/optional-debug pinout và baud riêng.
+  0.8  Cần 0.2–0.7; representative Bootloader/App build phải fit.
+  0.9  Cần 0.8; chốt regression/evidence/repository gate.
+
+  1.1  Cần Phase 0 PASS; biết page size và vùng board test được phép erase.
+  1.2  Cần contract Metadata v2 từ 0.3.
+  1.3  Cần 1.1 + 1.2; chưa được erase bản metadata hợp lệ duy nhất.
+  1.4  Cần 1.2 và action/state contract; không cần phần cứng.
+  1.5  Cần source 1.1–1.4; host chạy trước, board chạy sau.
+
+  2.1  Cần 0.2 + 0.3 + `pinout_hw.h`; W25Q32 dùng 3.3 V, /WP và /HOLD phải
+       được giữ high, SPI wiring và GND chung phải rõ trước hardware test.
+  2.2  Cần API 2.1 ổn định; primitive một-page/one-sector đã compile.
+  2.3  Cần 2.2; staging base/size đã chốt trong memory map.
+  2.4  Cần 1.2 + 2.2; manifest format/CRC/commit marker phải chốt trước code.
+  2.5  Cần source và test 2.1–2.4; thiếu chip thì chỉ PENDING HARDWARE.
+
+  3.1  Cần Phase 0 build; xác định đúng version/hash/license upstream.
+  3.2  Cần scope/wire contract và `firmware_format.h` đã khóa; chưa code crypto
+       service khi nonce/AAD/key-size chưa chốt.
+  3.3  Cần 3.1 + 3.2.
+  3.4  Cần 3.1 + 3.2 và callback đọc image đã định nghĩa.
+  3.5  Cần 3.2 + 3.4; Python và C phải serialize cùng byte layout.
+
+  Phase 4  Cần Phase 3 artifact/crypto contract đủ ổn định và hardware profile AS32.
+  Phase 5  Cần 3.2–3.5 + Phase 4; chưa cần W25Q32 thật để host-test transport.
+  Phase 6  Cần Phase 1 + Phase 2 hardware + Phase 5.
+  Phase 7  Cần Phase 6 full-image P2P baseline; host tạo diff, STM32 chỉ apply patch.
+  Phase 8  Cần Phase 6/7 PASS và measurement đủ để chạy final fault/security/release acceptance.
+
+Phase 1, Phase 2 và Phase 3 chỉ bắt đầu sau khi toàn bộ Phase 0 PASS. Không được
+bỏ dependency bên trong từng phase.
+
+
+## PHASE 0 — FINAL CONTRACT VÀ FEASIBILITY
+
+Mục tiêu phase: khóa ownership, byte layout, persistent state, hardware interface
+và build budget trước implementation. Phase sau không tự thêm field/state/address
+hoặc đổi authority.
+
+```mermaid
+flowchart LR
+    S01[0.1 Ownership] --> S02[0.2 Artifact + memory]
+    S02 --> S03[0.3 Persistent state]
+    S03 --> S04[0.4 Receive/resume]
+    S04 --> S05[0.5 Wire/session]
+    S05 --> S06[0.6 Mailbox]
+    S06 --> S07[0.7 Pinout]
+    S07 --> S08[0.8 Representative feasibility]
+    S08 --> S09[0.9 Test/evidence gate]
+```
+
+### 0.1. Scope, ownership và trust boundary
+
+Điều kiện: MCU là STM32F103C8T6 64 KB Flash/20 KB SRAM; hệ thống dùng ESP32,
+hai AS32-TTL-100-C, W25Q32 và ST-Link.
+
+Các bước:
+
+1. Chốt ESP32 → AS32 #1 → LoRa P2P → AS32 #2 → STM32.
+2. Application Update Agent sở hữu UART/secure frame/OTA receive/resume, W25
+   writes, preliminary verify, Backup preparation và Delta reconstruct.
+3. Bootloader sở hữu Metadata A/B, verify độc lập, anti-downgrade, Internal Flash
+   install, Trial Boot, rollback và jump.
+4. AS32 chỉ chuyển byte; ESP32 cache/retry nhưng không ký hoặc confirm.
+5. Recovery baseline dùng ST-Link/SWD; LoRaWAN/FUOTA ngoài phạm vi.
+
+File: README, system scope, architecture, threat/trust docs.  
+Điểm dừng: mỗi nhiệm vụ có đúng một owner; Bootloader là authority cuối.
+
+### 0.2. Artifact và memory map
+
+Điều kiện: 0.1 PASS; linker và driver chỉ dùng địa chỉ từ contract này.
+
+1. Internal Flash: Bootloader 16 KB, App 46 KB, Metadata A/B mỗi page 1 KB.
+2. W25Q32: Staging/Backup/Delta mỗi vùng 256 KB; Reserved 3.25 MB chứa Session
+   Journal 64 KB và Future Reserved 3.1875 MB.
+3. Mỗi vùng chức năng: manifest 4 KB + data/image 252 KB.
+4. FULL artifact: `Firmware_SignedHeader_t` 32 bytes + firmware + signature 64 bytes.
+5. Delta manifest khóa exact offset, hash/signature/CRC/progress/marker và domain
+   `AEGIS-F103-DELTA-V1`.
+6. Static assert alignment, adjacency, size và no-overlap.
+
+File: `Shared/memory_map.h`, `Shared/firmware_format.h`,
+memory/storage/release/Delta format docs.  
+Tác dụng: `memory_map.h` là nguồn địa chỉ duy nhất để linker, Internal Flash và
+W25Q32 cùng dùng. `firmware_format.h` chỉ khóa domain, byte layout SignedHeader
+32 bytes và kích thước signature 64 bytes; nó chưa thực hiện SHA-512/Ed25519ph.
+Các module khác không được tự ghi lại địa chỉ hoặc artifact layout bằng số rời rạc.
+Kiểm tra Phase 0: mọi end là exclusive; `APPLICATION_SIZE` bằng `0xB800`; static
+assert khóa layout C. Golden serialization đa nền tảng được chạy ở phase implement tool.
+Điểm dừng: image offset 0 ánh xạ Staging Image; byte contract không còn field ngầm định.
+
+### 0.3. Persistent state và record
+
+Điều kiện: 0.2 PASS; CRC/signature/marker coverage đã được khóa.
+
+1. Metadata v2 đúng 128 bytes: generation, operation state/ID, trial/count,
+   active `Firmware_SignedHeader_t`/signature, CRC và commit marker.
+2. Internal state chỉ gồm IDLE, INSTALL_IN_PROGRESS, ROLLBACK_IN_PROGRESS.
+3. W25 state gồm EMPTY, RX_IN_PROGRESS, COMPLETE_UNVERIFIED, VALID,
+   APPLY_IN_PROGRESS và INVALID.
+4. Boot action gồm START_APP, INSTALL_UPDATE, ROLLBACK, RECOVERY.
+5. FIRST_BOOT chưa provision khác CORRUPT và đều có policy fail-closed.
+6. Khóa table input → action và commit-last rule.
+
+File: `Shared/metadata_struct.h`, boot state headers và metadata/decision docs.  
+Tác dụng: khóa byte layout/state persistent trước khi viết code lưu A/B; header
+chỉ mô tả contract, còn thao tác đọc/commit thuộc Bootloader ở Phase 1.
+Kiểm tra Phase 0: static assert đúng offset, CRC coverage và commit-last order đã
+được đặc tả; fault test thực thi ở Phase 1/2.
+Điểm dừng: record/state không còn giá trị ngầm định; receive không dùng Internal Flash.
+
+### 0.4. Receive, duplicate và resume contract
+
+Điều kiện: 0.2–0.3 PASS; manifest sector chứa đủ identity, bitmap và marker.
+
+1. Bind operation ID, transfer ID, artifact ID, type, sizes và chunk size.
+2. Data chunk 224 bytes; vùng 252 KB cần tối đa bitmap 1152 bit.
+3. DATA: authenticate → range/duplicate → program → read-back → progress → ACK.
+4. Duplicate giống nhau ACK; conflicting duplicate/out-of-order NACK.
+5. Reset receive resume từ W25; reset Delta apply reconstruct Staging từ đầu.
+6. END chỉ publish marker sau completeness + authentication PASS.
+
+File: `Shared/ota_protocol.h`, W25/protocol/FULL/Delta docs.  
+Tác dụng: định nghĩa command, identity, offset và progress contract mà ESP32 và
+STM32 phải hiểu giống nhau; file này không tự truyền UART/LoRa hoặc ghi W25Q32.
+Kiểm tra Phase 0: manifest đủ bitmap, range/identity/ACK order và reset policy đã
+được đặc tả; fault injection thực thi ở phase storage/protocol.
+Điểm dừng: STM32/W25 là source of truth và không còn quy tắc resume ngầm định.
+
+### 0.5. Secure wire và key/session lifecycle
+
+Điều kiện: 0.4 PASS; mọi command payload phải fit secure frame.
+
+1. Secure frame overhead 39 bytes, payload max 256, raw max 295 bytes.
+2. Khóa little-endian, field offset, CRC coverage, nonce và AAD.
+3. Khóa BEGIN 33 bytes và DATA/END/ABORT/STATUS/BOOT/ACK/NACK payload.
+4. ESP32 sinh random session ID 8 bytes; counter domain tách hai hướng.
+5. Sender persist counter hoặc mở session mới sau reboot; counter không wrap.
+6. Receiver append session ID vào W25 Session Journal trước ACK đầu; ID đã dùng
+   không được mở lại qua reset, journal đầy/corrupt phải fail-closed.
+7. Baseline dùng per-device transport PSK và tách signing-key domain.
+
+File: `Shared/crypto_config.h`, `Shared/ota_protocol.h`, transport/key docs.  
+Tác dụng: khóa secure-wire, key size, nonce, AAD, counter và session contract.
+Signed firmware format đã thuộc `Shared/firmware_format.h`; implementation
+ChaCha20-Poly1305, SHA-512 và Ed25519ph chỉ được tạo ở Phase 3.
+Kiểm tra Phase 0: offset/size/endianness/nonce/AAD có static assert và payload
+không vượt frame; golden vector đa nền tảng thực thi ở Phase 3–5.
+Điểm dừng: parser/session/payload không còn giá trị ngầm định.
+
+### 0.6. Boot request và Trial confirmation ABI
+
+Điều kiện: 0.3 PASS; Application không được ghi Metadata A/B.
+
+1. Dùng 10 BKP register, record 20 bytes: magic, command, operation ID và CRC.
+2. Command chỉ có UPDATE_READY và TRIAL_CONFIRM; magic ghi cuối.
+3. UPDATE_READY chỉ tạo sau valid Staging + Backup rồi software reset.
+4. TRIAL_CONFIRM chỉ tạo sau self-check và bind candidate ID.
+5. Bootloader consume/clear, verify độc lập rồi mới commit metadata.
+6. Reset tại mọi half-word write không tạo request hợp lệ giả.
+
+File: `Shared/boot_mailbox.h`, boot mailbox/trial/install docs.  
+Tác dụng: định nghĩa ABI 20 bytes để Application gửi request qua reset; codec và
+Bootloader consumer dùng contract này nhưng Application không được ghi Metadata.
+Kiểm tra Phase 0: size/offset/CRC/commit-last có static assert và ownership rõ;
+fault/stale request test thực thi ở Phase 1 và Phase 6.
+Điểm dừng: entry vào Bootloader và confirmation có một ABI xác định.
+
+### 0.7. Pinout và hardware interface
+
+Điều kiện: 0.1 PASS; mọi pin phải tồn tại trên package STM32F103C8T6.
+
+1. ESP32–AS32 #1 và AS32 #2–USART1 STM32 đều dùng baseline `9600 8N1`.
+2. AS32 MD0=PB0, MD1=PB1, AUX=PB10.
+3. USART2 PA2/PA3 là debug cục bộ tùy chọn `115200 8N1`, mặc định không init;
+   Python/Cloud ingress không đi thẳng vào USART2 STM32.
+4. W25Q32 SPI1 PA4..PA7; LED PC13; giữ SWD/NRST.
+5. Chốt 3.3 V, GND chung, WP/HOLD high và AUX/mode timeout.
+
+File: `shared/pinout_hw.h`, AS32/system scope docs.  
+Tác dụng: là nguồn pin/peripheral/baud duy nhất cho driver board; driver không tự
+định nghĩa lại chân hoặc dùng chung baud LoRa với UART debug.
+Kiểm tra Phase 0: không trùng pin/peripheral; từng hop có baud riêng; interface
+bắt buộc và tùy chọn tách rõ. AS32 profile read-back thực thi ở Phase 4.
+Điểm dừng: wiring, điện áp, baud và ownership của mọi interface rõ ràng.
+
+### 0.8. Build skeleton và representative feasibility
+
+Điều kiện: 0.2–0.7 PASS; CMake, Ninja và ARM GCC/binutils sẵn sàng.
+
+1. Startup medium-density và linker đúng Bootloader/App base/size.
+2. Toolchain file chọn ARM GCC trước `project()`; root/module `CMakeLists.txt`
+   khai báo source tường minh và Ninja tạo ELF/BIN/HEX/MAP/disassembly/stack usage.
+3. `CMakePresets.json` tách Debug/Release/host test; build output nằm ngoài source.
+4. Representative Bootloader giữ/call metadata, mailbox, W25 read,
+   SHA-512/Ed25519ph, decision/executor, install/rollback và jump.
+5. Không link normal receiver, ChaCha/retry/resume hoặc Delta applier vào Bootloader.
+6. Production Release dùng `-Os`, section GC, LTO và warning-as-error nhất quán.
+7. Đo Flash/static RAM, giữ stack reserve 4 KB và audit `.su`; skeleton rỗng
+   không phải evidence. Runtime high-water được đo lại ở board phase sở hữu luồng.
+
+File: startup, hai linker/main, root/module `CMakeLists.txt`, `CMakePresets.json`,
+`cmake/*.cmake` và `Docs/build-and-toolchain.md`.  
+Tác dụng: tạo build graph tái lập cho Bootloader/Application và sinh đúng
+ELF/BIN/HEX/MAP/LST tại hai địa chỉ Flash đã khóa.
+Kiểm tra: configure/build sạch bằng preset Ninja tạo đủ output, vector đúng base
+và representative call graph không bị section GC loại.
+Điểm dừng: representative Bootloader ≤16 KB, App ≤46 KB; static RAM + stack
+reserve ≤20 KB và không static frame nào vượt reserve 4 KB.
+
+### 0.9. Test/evidence/repository gate
+
+Điều kiện: 0.8 PASS; đã biết loại test và vùng nhớ bị tác động.
+
+1. Mỗi phase có một regression chính với host/board/flash target tách biệt.
+2. Mock/fake chỉ trong Test; test compile đúng production source.
+3. Evidence lưu revision, command, expected/actual, profile, artifact hash và state cuối.
+4. README không giữ tiến độ; roadmap-status là nơi theo dõi.
+5. `.txt` canonical và `.md` mirror đồng bộ semantic.
+6. Quét link, KB/MB, thuật ngữ, state/action và ownership.
+
+File: test layout, roadmap status, validation evidence và Docs index.  
+Kiểm tra: clean checkout tái lập được command/evidence đã ghi.
+Phase 0 PASS khi 0.1–0.9 đạt, đặc biệt representative size gate 0.8.
+
+
+## PHASE 1 — INTERNAL FLASH, METADATA VÀ BOOT DECISION
+
+Mục tiêu phase: sau reset bootloader luôn chọn được START_APP, INSTALL, ROLLBACK hoặc
+RECOVERY từ dữ liệu persistent, kể cả một bản metadata bị hỏng.
+
+### 1.1. Primitive internal flash
+
+File:
+  - Bootloader/Inc/flash_program.h
+  - Bootloader/Src/flash_program.c
+
+Tác dụng module: cung cấp lớp ghi Internal Flash an toàn duy nhất cho Bootloader:
+range/alignment, unlock/lock, erase, program và read-back verify. Module này chưa
+biết Metadata A/B chọn record nào và chưa quyết định boot action.
+
+Điều kiện trước khi làm:
+  - 0.2/0.3 PASS; page size là 1 KB và vùng writable đã biết.
+  - Board test được phép mất dữ liệu ở page test; tuyệt đối không thử erase bằng
+    một address chưa đối chiếu `memory_map.h`.
+
+Các bước:
+  1. Tạo một status enum chung cho unlock/erase/program/verify.
+  2. Viết range helper chống overflow; chỉ Application + Metadata được writable.
+  3. Viết unlock/lock, erase page-aligned, program half-word-aligned.
+  4. Viết buffer program; byte lẻ chỉ pad 0xFF khi byte pad vẫn thuộc range và
+     đang erased.
+  5. Read-back verify sau erase/program và luôn lock lại khi transaction kết thúc.
+  6. Mọi vòng chờ phải hữu hạn và trả status, không treo Bootloader.
+
+Kiểm tra: build `-Wall -Wextra -Werror`; board test vùng flash dành riêng cho test.
+Điểm dừng: erase/program/read-back đúng, lỗi range bị từ chối.
+
+### 1.2. Chốt metadata contract và record helper
+
+File:
+  - Shared/firmware_format.h
+  - Shared/metadata_struct.h
+  - Common/Inc/crc32.h
+  - Common/Src/crc32.c
+  - Common/Inc/metadata_record.h
+  - Common/Src/metadata_record.c
+
+Tác dụng module: `firmware_format.h` khóa SignedHeader/signature dưới dạng byte
+contract, chưa có crypto implementation. `metadata_struct.h` là header-only
+contract, chỉ khóa hằng số, enum, byte layout persistent 128 bytes và static
+assert; file này không khai báo API hành vi. `crc32` là primitive integrity dùng
+lại. `metadata_record.h/.c` thuộc Common chỉ tạo default record, refresh CRC và
+validate **cấu trúc metadata**. Các module này không đọc page A/B, không chọn
+generation và không kiểm tra domain/header format, CRC của App, SHA-512 hoặc
+Ed25519ph.
+
+Điều kiện trước khi làm:
+  - 0.2 PASS; Metadata A/B mỗi record phải nằm gọn trong một page.
+  - Chưa ghi metadata thật cho đến khi offset, CRC coverage và marker được khóa.
+
+Các bước:
+  1. Implement đúng Metadata v2 128-byte contract từ Phase 0: operation state/ID,
+     trial/count, active SignedHeader/signature, CRC và commit marker.
+     SignedHeader/signature chỉ được giữ như bằng chứng firmware opaque ở Phase 1;
+     đến Phase 3 Bootloader mới dùng chúng để xác thực raw App. Chữ ký không ký
+     các field state của metadata và không được bỏ khỏi persistent layout.
+  2. Khóa layout little-endian bằng packed struct và static assert từng offset;
+     không đặt function prototype hoặc implementation trong Shared.
+  3. Common chỉ public ba API `MetadataRecord_InitializeDefault()`,
+     `MetadataRecord_RefreshCrc32()` và `MetadataRecord_IsStructurallyValid()`;
+     CRC dùng `Crc32_Compute(data, length)` nội bộ.
+  4. CRC chỉ bao phủ byte `[magic, metadata_crc32)`; không bao phủ chính CRC và
+     commit marker.
+  5. Structural validation chỉ kiểm tra metadata field/state, marker, CRC và
+     `image_size == 0` hoặc `image_size <= APPLICATION_SIZE`; không làm crypto.
+  6. Default record có cấu trúc hợp lệ nhưng active image_size = 0 và FIRST_BOOT
+     chưa provision không được boot.
+
+Kiểm tra: default metadata hợp lệ; sửa một byte trong vùng CRC phải invalid.
+Điểm dừng: format persistent đã được ghi trong docs và test serialize được.
+
+### 1.3. Metadata A/B store
+
+File:
+  - Bootloader/Inc/boot_metadata.h
+  - Bootloader/Src/boot_metadata.c
+
+Tác dụng module: đây là Metadata A/B store của Bootloader. Nó đọc/validate cả hai
+page, chọn record active theo generation và commit record mới sang page còn lại
+theo body-first/marker-last. Nó dùng `flash_program` để ghi và dùng validation
+của 1.2; nó không tự chọn START_APP/INSTALL/ROLLBACK và không verify firmware.
+
+Điều kiện trước khi làm:
+  - 1.1 và 1.2 PASS.
+  - Xác định rõ page active trước khi erase; không được erase record hợp lệ duy nhất.
+
+Các bước đọc:
+  1. Validate A và B độc lập bằng magic/format/field/CRC/commit marker.
+  2. Một bản hợp lệ thì chọn bản đó; hai bản hợp lệ thì so generation có wrap.
+  3. Generation bằng nhau chọn A ổn định; chênh đúng 0x80000000 trả ambiguous.
+  4. Hai page toàn 0xFF là FIRST_BOOT; có dữ liệu nhưng cả hai invalid là CORRUPT.
+
+Các bước ghi:
+  1. Copy metadata caller sang biến `pending`; không sửa caller trước khi commit.
+  2. Sinh generation từ active record, chuẩn hóa field nội bộ và tính CRC.
+  3. Erase slot không active.
+  4. Ghi body không gồm commit marker, rồi verify byte-for-byte.
+  5. Chỉ khi body đúng mới ghi commit marker; verify lại toàn record.
+  6. Chỉ sau success mới đổi active slot và copy `pending` về caller.
+
+Kiểm tra: A hỏng/B tốt, B hỏng/A tốt, cả hai tốt khác generation, cả hai hỏng và
+generation wrap policy.
+Điểm dừng: luôn giữ được ít nhất một bản hợp lệ khi mất điện lúc update metadata.
+
+### 1.4. Boot decision thuần
+
+File:
+  - Bootloader/Inc/boot_state_machine.h
+  - Bootloader/Src/boot_state_machine.c
+
+Tác dụng module: biến các điều kiện đã được lớp khác kiểm chứng thành một
+`Boot_Action_t`. Đây là hàm quyết định thuần, không đọc Flash, không ghi metadata,
+không verify chữ ký và không trực tiếp jump/install/rollback.
+
+Điều kiện trước khi làm:
+  - 1.2 PASS và danh sách action đã chốt.
+  - Không gọi Flash/UART/jump trong hàm quyết định.
+
+Các bước:
+  1. `BootState_Input_t` chứa metadata status, app/staging/backup validity,
+     UPDATE_READY, trial, attempts và operation state.
+  2. `Boot_Action_t`: START_APP, INSTALL_UPDATE, ROLLBACK, RECOVERY.
+  3. Xếp priority: metadata/FIRST_BOOT; rollback/install dở; app invalid; trial
+     hết; trial còn lượt; UPDATE_READY; cuối cùng START_APP.
+  4. Hàm chỉ map input -> action, không thay đổi input và không đụng hardware.
+
+Kiểm tra: table test cho FIRST_BOOT/CORRUPT, normal boot, update request, app
+invalid, install/rollback dở, trial còn lượt và trial hết lượt.
+Điểm dừng: bảng input -> action pass trên host.
+
+### 1.5. Regression Phase 1
+
+Điều kiện trước khi làm:
+  - Source 1.1–1.4 đã compile và cùng dùng API production.
+  - Chấp nhận board firmware test thay Bootloader và xóa Metadata A/B.
+
+Các bước:
+  1. Dùng một thư mục `test/Test_to_Phase/Phase1_Board/` cho cả phase.
+  2. Chạy host trước: metadata struct, A/B + power-loss mock, boot decision.
+  3. Khi host pass mới build/flash board: primitive Internal Flash và A/B thật.
+  4. Đọc biến GDB theo `Build_Test_Phase.txt`, rồi flash lại Bootloader production.
+
+Kiểm tra: host và board đều phải công bố total/pass/fail/failed_id; expected count
+được lấy từ test source hiện hành. Thiếu board thì ghi PENDING HARDWARE; build
+board thành công không được tính là hardware PASS.
+
+
+## PHASE 2 — W25Q32 VÀ STORAGE
+
+Mục tiêu phase: có driver chip thật và lớp storage final cho staging/backup.
+
+### 2.1. SPI + W25Q32 primitive
+
+File:
+  Driver/Inc/ext_flash.h
+  Driver/Src/ext_flash.c
+
+Tác dụng module: driver primitive cho chip W25Q32 qua SPI—JEDEC/read/page-program/
+sector-erase/status/timeout. Driver chỉ hiểu địa chỉ tuyệt đối của chip, chưa biết
+Staging, Backup, Delta hay OTA command.
+
+Điều kiện trước khi làm:
+  - Phase 0 PASS; `memory_map.h` có total/page/sector size của W25Q32.
+  - `pinout_hw.h` chốt SPI1: CS PA4, SCK PA5, MISO PA6, MOSI PA7.
+  - W25Q32 dùng nguồn 3.3 V và GND chung với STM32; không cấp logic 5 V.
+  - Chân /WP và /HOLD phải được giữ high khi dùng Standard SPI.
+  - Trước test erase phải chọn một sector test không chứa artifact cần giữ.
+
+Các bước:
+  1. Tạo một `ExtFlash_Status_t` dùng chung; caller phải phân biệt argument/range,
+     SPI timeout, BUSY timeout và Write Enable thất bại.
+  2. Init GPIO/SPI mode 0, 8-bit, MSB-first; CS high khi idle.
+  3. Helper truyền một byte phải timeout khi TXE/RXNE không xuất hiện và caller
+     phải kéo CS high trên mọi đường return.
+  4. Viết Read Status-1 và WaitWhileBusy có giới hạn hữu hạn.
+  5. Viết Write Enable, sau đó đọc lại WEL; WEL không lên thì trả status lỗi.
+  6. Viết JEDEC ID 0x9F và ghép ba byte manufacturer/type/capacity.
+  7. Viết Read Data với address 24-bit và range check chống overflow.
+  8. Viết Page Program tối đa 256 byte, cấm đi qua biên page; chờ BUSY sau ghi.
+  9. Viết Sector Erase 4 KB, bắt buộc sector-aligned; chờ BUSY sau erase.
+ 10. Command/mask/timeout/helper private để trong `.c`; header chỉ chứa enum/API.
+
+Kiểm tra khi chưa có mạch:
+  - Compile chính `Driver/Src/ext_flash.c` với `-Wall -Wextra -Werror`.
+  - Review opcode, 24-bit address, range cuối chip, page/sector alignment và mọi
+    vòng chờ đều có timeout.
+
+Kiểm tra khi có mạch:
+  1. Init trả OK; JEDEC ID không được là 0x000000 hoặc 0xFFFFFF và phải khớp chip.
+  2. Erase sector test; đọc toàn sector phải là 0xFF.
+  3. Program một page pattern; read-back phải khớp toàn byte.
+  4. Program sát cuối page và đọc sát cuối chip.
+  5. Sai range/cross-page/unaligned trả đúng enum và không thay đổi Flash.
+
+Điểm dừng: primitive PASS các kiểm tra trên và không biết staging/backup base.
+
+### 2.2. Boundary và multi-page operation
+
+Điều kiện trước khi làm:
+  - API/status 2.1 đã ổn định; PageProgram một page đã compile.
+  - Chốt rõ semantics của length=0 trước khi viết test.
+
+Các bước:
+  1. Tạo `WriteBlock`, `ReadBlock`, `VerifyBlock` dùng absolute address.
+  2. Range check bằng `length <= total_size - address`, không dùng phép cộng có thể overflow.
+  3. `WriteBlock` tính phần còn lại của page đầu, chia chunk không vượt 256 byte.
+  4. Dừng ngay và trả status đầu tiên nếu bất kỳ page nào lỗi.
+  5. `VerifyBlock` đọc theo buffer nhỏ và so byte, không cấp phát toàn image.
+  6. Không tự erase trong `WriteBlock` nếu API contract không ghi rõ điều đó.
+
+Kiểm tra: test calculation host nếu helper là hàm thuần; hardware cross-page test.
+Điểm dừng: không có API nào ngầm cộng `W25Q32_STAGING_BASE`.
+
+### 2.3. Staging storage
+
+File:
+  - Application/Inc/artifact_storage.h
+  - Application/Src/artifact_storage.c
+
+Tác dụng module: ánh xạ offset artifact hợp lệ vào đúng vùng Staging/Backup/Delta,
+quản lý prepare/read/write/verify/manifest và ngăn chạm biên phân vùng. Nó dùng
+`ext_flash` nhưng không tự nhận UART/LoRa và không quyết định firmware trusted.
+
+Điều kiện trước khi làm:
+  - 2.2 PASS; block API dùng absolute address và không biết staging.
+  - Staging Manifest/Image và maximum image size đã khóa trong memory map.
+
+Các bước:
+  1. Tạo API theo offset tương đối bên trong Staging Image.
+  2. Validate `offset + length` chống overflow và không chạm manifest/Backup.
+  3. Prepare erase đúng manifest và số image sector cần cho transaction.
+  4. Write gọi block API; chỉ báo success sau read-back/verify.
+  5. Read/verify không được chạm sang Backup Slot.
+
+Kiểm tra: offset + length vượt staging bị từ chối; block hợp lệ map đúng địa chỉ.
+Điểm dừng: lưu được image và progress/manifest xuống Staging contract cuối.
+
+### 2.4. Backup image và manifest
+
+Điều kiện trước khi làm:
+  - 1.2 PASS để tái sử dụng nguyên tắc CRC/commit marker.
+  - 2.2 PASS và layout Backup Manifest/Image đã khóa.
+  - Chưa copy App nếu manifest format và CRC coverage chưa có static assert/test.
+ 
+Các bước:
+  1. Dùng exact SignedHeader/signature, operation ID, CRC và commit marker theo persistent contract Phase 0.
+  2. Erase/invalidate riêng sector manifest trước transaction.
+  3. Erase vùng backup image cần dùng, copy App theo block và read-back verify.
+  4. Tính/đối chiếu CRC image đã copy.
+  5. Ghi manifest body, verify, rồi mới ghi commit marker cuối cùng.
+  6. Mọi failure trước marker phải để manifest invalid.
+
+Kiểm tra: manifest chưa commit/CRC sai/size sai đều invalid; backup valid đọc lại được đầy đủ.
+Điểm dừng: backup ghi dở không thể được chọn rollback.
+
+### 2.5. Nghiệm thu Phase 2
+
+Điều kiện trước khi làm:
+  - Source 2.1–2.4 compile cùng production source và test không chứa implementation
+    thay thế driver.
+
+Các bước:
+  1. Chạy host test boundary/manifest trước.
+  2. Chọn sector/vùng test và ghi rõ dữ liệu sẽ bị xóa.
+  3. Chạy JEDEC, erase/read, page/cross-page, staging, backup và Session Journal
+     append/replay/full/corrupt trên chip.
+  4. Reset giữa các checkpoint manifest để chứng minh backup dở luôn invalid.
+  5. Lưu command, số test, expected output và biến GDB/UART.
+
+Nếu chưa có W25Q32: ghi `Hardware acceptance: PENDING — missing W25Q32 board` và
+có thể đi Phase 3. Không thêm RAM mock vào production và không ghi hardware PASS.
+Phase 2 DONE hoàn toàn khi read/write/erase/staging/backup/session journal pass
+trên chip thật.
+
+Regression phải công bố test count/failed ID và evidence read/write/erase,
+manifest commit-last, progress resume và power-loss trên chip thật.
+
+
+## PHASE 3 — CRYPTO VÀ SIGNER
+
+Mục tiêu phase: crypto API C và công cụ PC hiểu chính xác cùng một nonce, AAD và
+signed header trước khi ghép UART.
+
+Điều kiện mở Phase 3:
+  - Phase 0 PASS; memory map/build/toolchain ổn định.
+  - Có thể làm khi Phase 2 hardware còn PENDING vì test crypto chạy host trước.
+  - Không dùng private key thật làm fixture; test key phải nằm trong Test/.
+
+### 3.1. Vendor Monocypher
+
+Làm: đặt Monocypher 4.0.3 vào `Libraries/Third_Party/Monocypher/`; giữ LICENSE,
+VERSION/UPSTREAM; không sửa source upstream.
+Kiểm tra: hash/version đúng upstream, compile host và ARM.
+Điểm dừng: dependency được pin, chưa cần viết protocol.
+
+### 3.2. Crypto runtime contract
+
+File: `Shared/crypto_config.h`.
+
+Tác dụng file: khóa tham số crypto runtime dùng chung giữa Python, Application
+và Bootloader; không chứa key bí mật và không trực tiếp encrypt/decrypt/verify.
+Signed firmware byte layout không được định nghĩa lại ở đây mà dùng nguyên
+`Shared/firmware_format.h` đã khóa từ Phase 0/1.
+
+Làm: chốt transport/signing key size, hash/tag/nonce size, session/counter endian,
+counter domain và AAD offsets; kiểm tra các kích thước thuật toán tương thích với
+signature 64 bytes đã khai báo trong firmware format.
+
+Kiểm tra: static assert offset/kích thước; serialize vector có byte expected rõ.
+Điểm dừng: Python và C có thể dùng cùng một byte layout.
+
+### 3.3. ChaCha20-Poly1305 service
+
+File:
+  Application/Inc/secure_transport.h
+  Application/Src/secure_transport.c
+
+Tác dụng module: adapter ChaCha20-Poly1305 phía Application, dựng nonce/AAD và
+encrypt/decrypt frame qua API thống nhất; parser OTA không gọi Monocypher trực tiếp.
+
+Làm: adapter encrypt/decrypt frame; build nonce/AAD ở một chỗ; clear temporary
+secret khi xong. Không gọi Monocypher trực tiếp từ parser/receiver.
+
+Kiểm tra: known-answer, round-trip; sửa ciphertext/AAD/TAG/nonce phải fail.
+Điểm dừng: secure transport sau này chỉ cần gọi service.
+
+### 3.4. Firmware hash/signature verify
+
+File:
+  Common/Inc/firmware_auth.h
+  Common/Src/firmware_auth.c
+
+Tác dụng module: verifier firmware dùng chung cho Application và Bootloader; đọc
+image theo block, tự tính SHA-512 và kiểm Ed25519ph bằng public key mà không giữ
+toàn image trong RAM. Module verify-only, không chứa private key hoặc ChaCha.
+
+Làm: module verify-only được compile vào Application và Bootloader; SHA-512
+init/update/final và Ed25519ph verify API nhận signed header, stream
+image và signature. Tại đây mới kiểm tra domain/header format/image size/image
+CRC rồi xác thực SHA-512 + Ed25519ph. Chưa phụ thuộc W25 bằng cách để verifier
+nhận callback đọc.
+
+Kiểm tra: vector hợp lệ pass; sửa header/image/signature/public key fail.
+Điểm dừng: C verifier hoạt động trên host fixture và representative Bootloader
+chỉ giữ verify code, không kéo ChaCha transport vào.
+
+==> 3.4 sẽ làm một việc: đọc firmware từng block, tính hash và kiểm tra chữ ký mà không cần đưa toàn bộ 46 KB vào RAM.
+Luồng xử lý:
+Signed header 32 byte
+        ↓ SHA-512 update
+Đọc firmware từng block qua callback
+        ↓ SHA-512 update
+Hash 64 byte
+        ↓
+crypto_ed25519_ph_check()
+        ↓
+Hợp lệ / chữ ký sai
+
+### 3.5. Signer final
+
+File: `tools/sign_firmware.py`.
+
+Tác dụng tool: tạo SignedHeader và chữ ký Ed25519ph trên PC/CI, rồi đóng gói
+artifact mà C verifier hiểu; đây là nơi duy nhất dùng private signing key.
+
+Làm: nhận BIN/version/private-key path; xuất `.aegisfw` gồm SignedHeader 32 byte,
+firmware và signature 64 byte, không có trailing binary manifest.
+Private key không có giá trị mặc định trong repo.
+
+Kiểm tra: artifact từ Python được C Phase 3.4 verify; output deterministic ở các
+trường không ngẫu nhiên.
+Phase 3 DONE: crypto host regression pass và code ARM compile.
+
+## PHẦN B — NÂNG CẤP AEGIS: LORA PHY -> LORA P2P -> FULL OTA -> DELTA OTA
+
+## PHẠM VI TRIỂN KHAI P2P
+
+- Phase 0–3 khóa nền tảng Aegis-OTA trước khi triển khai link P2P production.
+- Từ Phase 4 trở đi roadmap chỉ tập trung **LoRa P2P với 2 AS32**.
+- Target STM32 vẫn là STM32F103C8T6 64 KB Internal Flash; Bootloader 16 KB,
+  Application tối đa 46 KB. Không thu nhỏ Application để nhét Delta.
+- W25Q32 4 MB dùng cho STAGING, BACKUP và DELTA. Host/release machine tạo patch;
+  STM32 Application streaming-apply patch, không tự tìm diff.
+- ESP32 được chốt là **P2P Gateway Controller / OTA sender**: nhận/cache artifact,
+  fragment, retry/resume, theo dõi progress và giao tiếp AS32 #1.
+- Hai AS32-TTL-100-C tạo transparent LoRa P2P link giữa ESP32 và STM32.
+- Firmware signing private key chỉ ở release machine/CI. ESP32, AS32 và STM32 không
+  được chứa private signing key.
+- Target firmware cuối cùng luôn phải verify Ed25519ph tại STM32 trước install.
+
+## CÁCH HIỂU ĐÚNG CÁC NẤC
+
+  Nấc 1 — LoRa PHY / bring-up:
+    Cấu hình, gửi/nhận AS32 qua UART/AUX, đo link cơ bản. Chưa có OTA.
+
+  Nấc 2 — Secure/reliable LoRa P2P:
+    Hai AS32 nói trực tiếp. Aegis tự chịu framing, ChaCha20-Poly1305, ACK/NACK,
+    timeout, retry, duplicate, anti-replay và resume.
+
+  Nấc 3 — FULL OTA:
+    Truyền full signed target qua P2P -> W25Q32 STAGING -> verify target
+    -> backup/install/trial/rollback. Đây là correctness baseline.
+
+  Nấc 4 — Delta OTA:
+    Host so sánh old/new firmware và tạo patch. STM32 nhận patch vào DELTA_DATA,
+    reconstruct full target sang STAGING, verify lại target rồi reuse pipeline FULL.
+
+  Nấc 5 — Final acceptance:
+    Fault injection, security negative, RF/performance measurement, reproducible
+    release và evidence để project có thể demo/review.
+
+## KIẾN TRÚC ĐÍCH
+
+P2P FULL:
+
+  Release machine / PC / CI
+         |
+         | build + tools/sign_firmware.py
+         v
+  signed FULL artifact
+         |
+         v
+  ESP32 Gateway Controller
+  cache / fragment / retry / resume
+         |
+         | UART
+         v
+  AS32 #1  ))))))))))  LoRa P2P  ((((((((((  AS32 #2
+                                                |
+                                                | UART
+                                                v
+                                  STM32 Application Update Agent
+                                                |
+                                                v
+                                         W25Q32 STAGING
+                                                |
+                                  preliminary verify + Backup
+                                                |
+                                     UPDATE_READY + reset
+                                                |
+                                                v
+                                   Bootloader verify/install/trial
+
+
+P2P DELTA:
+
+  old_vN.bin + new_vN1.bin
+             |
+             | host/release machine
+             v
+       tools/make_delta.py
+             |
+             v
+      signed DELTA package
+             |
+             v
+     ESP32 Gateway Controller
+             |
+             v
+      AS32 #1 ))) P2P ))) AS32 #2
+             |
+             v
+   STM32 Application -> W25Q32 DELTA_DATA
+             |
+             | STM32 streaming apply
+             | old Application -> source
+             v
+       W25Q32 STAGING
+             |
+             | full target reconstructed
+             v
+   SHA-512 + Ed25519ph verify
+             |
+  publish Staging + Backup + reset
+             |
+ Bootloader verify/install/trial/rollback
+
+
+## MỘT SỐ BẤT BIẾN KIẾN TRÚC
+
+- Không patch trực tiếp Internal Application.
+- Không dùng thêm Internal Flash chỉ để chứa patch.
+- Bootloader giữ trong 16 KB và không chứa normal receiver/ChaCha/Delta applier.
+- Host làm công việc nặng: diff/search/matching/compression.
+- STM32 chỉ làm công việc xác định, bounded và streaming: parse/apply/verify.
+- Full-image OTA luôn tồn tại làm fallback và correctness baseline.
+- Delta là optimization, không thay thế signed target verification.
+- ESP32/AS32 chỉ vận chuyển và điều phối; không được bypass boot decision local.
+- ACK nghĩa là dữ liệu đã được validate/commit theo contract, không phải UART TX xong.
+- Mọi vòng chờ AUX/UART/radio/Flash đều có timeout/status.
+- Resume dựa trên state thật ở STM32/W25Q32, không dựa riêng state RAM của ESP32.
+- Không hard-code payload/timeout/airtime/profile radio từ phỏng đoán.
+
+## QUY TẮC ARTIFACT VÀ TRANSPORT
+
+1. FULL artifact:
+   signed_header[32] || firmware[image_size] || signature[64].
+   Không có trailing binary manifest.
+
+2. DELTA package:
+   delta_header/manifest || patch bytes || delta signature/integrity metadata.
+   Delta header phải bind ít nhất:
+   - format/version;
+   - domain raw 19 byte `AEGIS-F103-DELTA-V1`;
+   - base firmware identity: version + size + SHA-512 hash 64 byte;
+   - target firmware identity: version + size + SHA-512 hash 64 byte + nguyên
+     `Firmware_SignedHeader_t` 32 byte;
+   - patch size + SHA-512 patch hash 64 byte;
+   - algorithm/profile identifier;
+   - target Ed25519ph signature 64 byte;
+   - delta manifest Ed25519ph signature 64 byte.
+
+3. Final authority:
+   - Delta manifest bắt buộc authenticate trước apply.
+   - Sau reconstruct, full target bắt buộc verify lại `Firmware_SignedHeader_t`
+     + Ed25519ph target signature.
+   - Reconstruct đúng byte nhưng target signature fail => không install.
+
+4. Hash coverage — mọi SHA-512 digest bên dưới đúng 64 byte:
+   - base_hash   = SHA-512(base firmware[0 .. base_size-1]).
+   - target_hash = SHA-512(target firmware[0 .. target_size-1]).
+   - patch_hash  = SHA-512(patch bytes[0 .. patch_size-1]).
+   - target signing prehash = SHA-512(target signed header 32 byte ||
+     target firmware[0 .. target_size-1]).
+
+5. Delta domain/signature:
+   - `DELTA_DOMAIN_STRING = "AEGIS-F103-DELTA-V1"`.
+   - `DELTA_DOMAIN_SIZE = 19U`.
+   - Baseline dùng release public key đã provision nhưng domain riêng để không nhầm
+     firmware signature với delta manifest signature.
+
+6. Key responsibility:
+   - P2P transport key chỉ bảo vệ từng ChaCha20-Poly1305 frame.
+   - Release public key verify delta manifest và target firmware signature.
+   - Pass transport authentication không được bỏ qua target signature.
+
+7. P2P wire:
+   - Logical OTA commands chạy bên trong secure P2P frame.
+   - Fragment size/timeout/retry profile phải được đo trên AS32 thật.
+   - ACK chỉ sau receiver validation/storage commit theo contract.
+
+8. Fallback:
+   - Node không có đúng base -> reject Delta, host chọn FULL.
+   - Delta không đủ lợi so với FULL -> host chọn FULL.
+   - Threshold FULL/DELTA chỉ chốt sau measurement P2P thật.
+
+## PHASE 4 — LORA BRING-UP VÀ LINK P2P THÔ
+
+Mục tiêu phase:
+  ESP32 và STM32 điều khiển được AS32 riêng lẻ, profile radio tái lập được và
+  hai đầu có link P2P thô hai chiều. Chưa gửi firmware.
+
+Điều kiện mở Phase 4:
+  - Phase 3 artifact/crypto contract đủ ổn định; checkpoint 3.5 hoàn tất trước khi
+    gọi Phase 4 là production work.
+  - Có đúng model AS32, datasheet, antenna đúng band và nguồn đủ peak current.
+  - Pin UART/MD0/MD1/AUX được chốt trong `shared/pinout_hw.h`.
+  - Có RF profile hợp pháp cho khu vực thử nghiệm.
+
+### 4.1. Hardware inventory và profile
+
+File dự kiến:
+  docs/LoRa/AS32_Hardware_Profile.md
+  shared/pinout_hw.h
+
+Tác dụng: profile ghi cấu hình phần cứng/radio đã đọc từ module; `pinout_hw.h`
+khóa wiring STM32 để driver AS32 và debug UART không tranh chân/peripheral.
+
+Làm:
+  - Ghi model/module marking, hardware/firmware version, band, logic level và nguồn.
+  - Ghi config đã đọc được từ module, không dựa vào default.
+  - Chốt UART phía STM32 và ESP32, tránh xung đột UART debug.
+  - Chốt MD0/MD1/AUX ở reset/config/normal.
+  - Ghi antenna, connector và giới hạn công suất thử nghiệm.
+
+Kiểm tra:
+  - UART TX/RX chéo đúng, common GND.
+  - Module vào config mode, đọc version/config được.
+  - Hai đầu dùng cùng channel/air-rate/profile.
+  - Reset module không treo MCU.
+
+Điểm dừng:
+  - Không còn giá trị TBD ảnh hưởng wiring/config.
+
+### 4.2. AS32 low-level adapter phía STM32
+
+File:
+  driver/inc/lora_as32.h
+  driver/src/lora_as32.c
+  driver/src/lora_as32_protocol.c
+  driver/inc/timebase.h
+  driver/src/timebase.c
+
+Tác dụng module: adapter UART/MD0/MD1/AUX mức thấp phía STM32, gửi/nhận buffer và
+quản lý mode/timeout. Nó không parse OTA, không decrypt và không ghi storage.
+
+API tối thiểu:
+  - Init.
+  - EnterConfig / EnterNormal nếu cần.
+  - ReadConfig / WriteConfig.
+  - Send(buffer, length, timeout).
+  - Receive(buffer, max_length, timeout hoặc non-blocking state).
+  - WaitAuxReady(timeout).
+  - GetStatus/ClearError.
+
+Status tối thiểu:
+  OK
+  INVALID_ARG
+  NOT_READY
+  BUSY
+  TIMEOUT
+  UART_ERROR
+  CONFIG_ERROR
+  IO_ERROR
+  OUT_OF_RANGE
+
+Làm:
+  - Driver UART/timebase độc lập OTA logic.
+  - ISR chỉ nhận byte/event; không decrypt/parse OTA trong ISR.
+  - AUX luôn có timeout.
+  - Validate length trước khi gửi module.
+  - Không dùng delay vô hạn để chờ mode/busy.
+
+Kiểm tra:
+  - Init đúng/sai tham số.
+  - Config read/write.
+  - AUX busy/ready và AUX stuck.
+  - UART partial RX, overflow, reset module giữa transaction.
+
+Điểm dừng:
+  - STM32 gửi/nhận buffer test qua AS32 ổn định.
+
+### 4.3. AS32 adapter phía ESP32
+
+File dự kiến:
+  esp32_gateway/components/as32/
+  esp32_gateway/main/
+
+Tác dụng module: adapter AS32 phía ESP32 và task/queue radio độc lập; cung cấp
+buffer transport cho OTA sender nhưng không ký firmware hoặc quyết định validity.
+
+Làm:
+  - Dùng cùng hardware profile Phase 4.1.
+  - Task UART/radio riêng, queue giữa radio và OTA sender.
+  - API send/receive không phụ thuộc upstream Wi-Fi/host.
+  - Timeout/error mapping rõ.
+  - Không chứa private signing key.
+
+Kiểm tra:
+  - Burst TX/RX.
+  - queue full.
+  - AUX timeout.
+  - module reset.
+  - ESP32 reboot không giả lập session OTA còn hợp lệ.
+
+Điểm dừng:
+  - ESP32 có radio adapter độc lập upstream host.
+
+### 4.4. Link LoRa P2P thô hai chiều
+
+Test packet tạm chỉ cho Phase 4:
+  MAGIC | DIRECTION | COUNTER | LENGTH | PAYLOAD | CRC32
+
+Làm:
+  - ESP32 -> STM32 và STM32 -> ESP32.
+  - Đo payload/MTU thực tế của AS32.
+  - Đo latency, throughput, packet loss.
+  - Đọc RSSI/SNR nếu model/firmware cung cấp.
+  - Test cấu hình lệch channel/rate để biết failure behavior.
+
+Kiểm tra:
+  - length 0, 1, MTU-1, MTU, MTU+1.
+  - duplicate, corrupt, burst, reset một đầu.
+  - chạy lâu để tìm overflow/race.
+
+Phase 4 DONE:
+  - Driver hai đầu pass.
+  - Có RF profile tái lập.
+  - Có MTU/latency/loss/throughput đo được.
+  - Chưa truyền firmware.
+
+
+## PHASE 5 — SECURE/RELIABLE OTA TRANSPORT QUA LORA P2P
+
+Mục tiêu phase:
+  Biến link P2P thô thành transport OTA có session, AEAD, ACK/NACK, retry và resume.
+  Chưa install Application.
+
+Điều kiện mở Phase 5:
+  - Phase 4 source/host gate đủ để viết và host-test trước; Phase 4 hardware PASS
+    vẫn bắt buộc trước khi nghiệm thu Phase 5 trên link thật.
+  - Phase 3 crypto/signer pass regression.
+  - MTU P2P thực tế đã biết.
+  - Timeout được suy ra từ airtime/latency đo được, không bê timeout UART cũ sang.
+
+### 5.1. Tách logical command khỏi wire transport
+
+File:
+  Shared/ota_protocol.h
+  Application/Inc/ota_transport.h
+  Application/Src/ota_transport.c
+
+Tác dụng module: `ota_protocol.h` khóa logical command; `ota_transport` parse,
+serialize và dispatch command độc lập AS32. Secure framing và storage được gọi
+qua interface riêng, không trộn trực tiếp vào parser.
+
+Logical command giữ:
+  BEGIN
+  DATA
+  END
+  ABORT
+  STATUS
+  BOOT
+
+DATA dùng final 15-byte envelope: transfer_id, section, offset, payload_length;
+payload data tối đa 224 byte.
+
+Làm:
+  - Application receiver hiểu logical command, không biết AS32.
+  - P2P adapter serialize command thành secure radio frame.
+  - Exact-length/range validation trước khi đổi state.
+
+Điểm dừng:
+  - Host fake transport chứng minh receiver độc lập phần cứng.
+
+### 5.2. Secure P2P session
+
+Làm:
+  - Reuse ChaCha20-Poly1305 service Phase 3.3.
+  - Chốt nonce domain riêng cho P2P.
+  - SESSION_ID + RX/TX frame counter riêng.
+  - Counter chỉ commit sau TAG valid.
+  - ACK/NACK cũng được AEAD bảo vệ và dùng counter mới.
+  - CRC chỉ hỗ trợ framing/random corruption; TAG là authenticity.
+  - Chỉ BEGIN/STATUS được mở session mới; sau TAG hợp lệ, ID phải commit vào Session
+    Journal trước khi session được publish và response đầu tiên được gửi.
+
+Kiểm tra:
+  - sửa AAD/ciphertext/TAG/counter/session.
+  - replay.
+  - duplicate logical DATA hợp lệ.
+  - sender/receiver reset không reuse nonce theo cùng key/session.
+  - replay BEGIN của session đã commit bị từ chối cả sau reset STM32.
+
+Điểm dừng:
+  - Secure command hai chiều qua host simulation và hai AS32.
+
+### 5.3. Reliability, window và resume
+
+Baseline:
+  - Bắt đầu stop-and-wait.
+  - Chỉ tăng window khi measurement chứng minh lợi ích.
+
+Làm:
+  - ACK/NACK theo packet ID hoặc offset.
+  - Retry hữu hạn + backoff.
+  - Duplicate cùng nội dung được idempotent, không ghi hai lần.
+  - Out-of-order policy rõ.
+  - STATUS trả transfer_id, artifact identity, next_missing_offset hoặc bitmap.
+  - ACK application chỉ phát sau commit vào receiver/storage contract.
+
+Kiểm tra:
+  - drop mỗi packet thứ N.
+  - duplicate/reorder/corrupt.
+  - delay/mất ACK.
+  - reset ESP32/STM32/AS32 ở BEGIN/DATA/END.
+  - resume artifact đúng; artifact khác phải mở transfer mới.
+
+Điểm dừng:
+  - Blob test qua link lỗi vẫn byte-for-byte đúng.
+
+### 5.4. ESP32 P2P sender
+
+File:
+  ESP32_Gateway/components/ota_sender/
+
+Tác dụng module: state machine sender phía ESP32—đọc artifact, chia DATA, quản lý
+ACK/NACK/retry/resume/progress và cache state; không giữ private signing key.
+
+Làm:
+  - Đọc artifact theo block phù hợp MTU.
+  - BEGIN -> DATA/retry -> END -> STATUS.
+  - Cache bền vững artifact + operation_id + transfer_id; sau reboot tạo session
+    mới, hỏi STM32/W25Q32 và resume, không reuse nonce/counter session cũ.
+  - Progress phân biệt sent/ACKed/staged/verified/installed/confirmed.
+  - Mất upstream link không xóa artifact đã cache.
+
+Phase 5 DONE:
+  - Signed test artifact đi qua secure/reliable P2P tới storage mock.
+  - Negative crypto/replay/loss/resume pass.
+  - Chưa gọi OTA hoàn chỉnh nếu W25 hardware chưa PASS.
+
+
+## PHASE 6 — FULL-IMAGE P2P OTA END-TO-END
+
+Mục tiêu phase:
+  Có baseline đúng trước mọi optimization: truyền full signed firmware qua P2P,
+  staging W25Q32, verify, backup, install, trial và rollback.
+
+Điều kiện mở Phase 6:
+  - Phase 1 Internal Flash PASS.
+  - Phase 2 W25Q32 hardware PASS.
+  - Phase 5 secure/reliable P2P PASS.
+  - App vẫn ở 0x08004000, max 46 KB.
+
+### 6.1. Application receiver -> STAGING
+
+Làm:
+  - BEGIN validate header/manifest/size.
+  - Erase đúng số sector cần dùng.
+  - DATA map offset.
+  - Chỉ ACK committed sau write + read-back.
+  - END chỉ chuyển verify khi đủ byte.
+  - Resume dùng state persistent/storage thật.
+
+Kiểm tra:
+  - last block lẻ.
+  - duplicate.
+  - out-of-range.
+  - write/read-back fail.
+  - power loss.
+
+### 6.2. Preliminary và independent target verification
+
+Làm:
+  - Application verify sơ bộ trước request; Bootloader verify độc lập sau reset.
+  - Kiểm target, size, version policy, CRC/hash/signature.
+  - LoRa/ESP32 không quyết định validity.
+
+Kiểm tra:
+  - artifact đúng pass.
+  - sửa image/header/signature/target/version fail.
+
+### 6.3. Backup/install/rollback
+
+Làm:
+  - Application tạo/verify Backup, ghi UPDATE_READY rồi reset.
+  - Bootloader match operation ID, verify Staging/Backup độc lập.
+  - Bootloader commit metadata theo transaction power-loss-safe.
+  - Program App từ verified STAGING.
+  - Read-back/verify.
+  - Set trial boot.
+  - Feed IWDG trong blocking operation nếu watchdog bật.
+
+Kiểm tra:
+  - reset/cắt nguồn tại từng persistent write.
+  - kết quả chỉ được: old app hợp lệ, new app committed hoặc recovery.
+
+### 6.4. Application health confirmation
+
+Làm:
+  - App chỉ confirm sau self-check.
+  - Ghi TRIAL_CONFIRM vào BKP mailbox rồi software reset.
+  - Bootloader consume, match candidate ID và commit confirmed metadata.
+  - Trial hết lượt -> rollback.
+  - ESP32 không được confirm thay STM32.
+
+### 6.5. Full-image baseline measurement
+
+Scenario:
+  - image nhỏ.
+  - image gần 46 KB.
+  - packet loss/duplicate/reorder.
+  - mất link rồi resume.
+  - reset ESP32/AS32/STM32.
+  - power loss staging/backup/install/trial.
+
+Bắt buộc ghi:
+  full_artifact_bytes
+  radio_payload_bytes
+  packet_count
+  retry_count
+  total_time
+  throughput
+  estimated airtime
+  success rate
+
+Phase 6 DONE:
+  - Full-image P2P OTA chạy end-to-end.
+  - Trial/rollback có evidence.
+  - Có số đo baseline để quyết định Delta.
+
+
+## PHASE 7 — DELTA OTA: HOST DIFF, APPLICATION STREAMING APPLY
+
+Mục tiêu phase:
+  Giảm số byte qua radio mà không đổi authority. Host tạo patch; STM32 Application
+  apply patch từ old App + DELTA_DATA sang full target trong STAGING_IMAGE.
+
+Điều kiện mở Phase 7:
+  - Phase 6 full-image baseline PASS.
+  - W25Q32 layout đã reserve DELTA_MANIFEST + DELTA_DATA.
+  - Không tăng Bootloader quá 16 KB bằng cách lấy thêm Application Flash.
+  - Có old firmware binary chính xác tương ứng với base image trên node.
+  - W25 Delta manifest có apply marker và Application restart policy đã test.
+
+## QUYẾT ĐỊNH CÔNG CỤ DELTA
+
+Baseline source mẫu: Aegis minimal streaming `COPY/ADD/END`.
+
+Lý do chọn format tối giản cho source đối chiếu:
+  - Decoder bounded, không malloc và dễ fault-test trên STM32F103C8T6.
+  - Host làm matching; STM32 chỉ chạy ba opcode `COPY`, `ADD`, `END`.
+  - Detools/bsdiff vẫn có thể benchmark ở host nhưng không được kéo vào firmware
+    nếu chưa chứng minh code-size/RAM tốt hơn format tối giản.
+
+Classic bsdiff:
+  - Dùng làm reference/benchmark patch size.
+  - Không chọn classic bspatch làm baseline STM32 vì implementation truyền thống
+    và bzip2 không phù hợp mục tiêu RAM/code-size nhỏ.
+  - Nếu dùng một embedded/streaming fork thì phải coi đó là format/library khác và
+    pin version/license/test riêng.
+
+Nguyên tắc nếu sau này benchmark một format/library khác:
+  - Không chuyển applier sang Bootloader.
+  - Dùng Aegis minimal patch format streaming, ví dụ COPY/ADD/END hoặc diff/extra
+    rất nhỏ, host vẫn làm matching nặng.
+  - Chọn format sau measurement, không đổi Internal Flash layout để cứu library.
+
+### 7.1. Benchmark host và code-size gate
+
+File:
+  tools/delta_benchmark.py
+  Docs/Delta/Delta_Tool_Selection.md
+
+Tác dụng: tool đo patch/time/airtime trên dataset; tài liệu lưu evidence chọn
+format/version/license. Hai file này quyết định thuật toán trước khi viết applier.
+
+Dataset:
+  - firmware giống hệt.
+  - thay vài byte.
+  - thêm/xóa function.
+  - đổi constant/table.
+  - build thay đổi layout lớn.
+  - image gần 46 KB.
+
+So sánh tối thiểu:
+  - Aegis minimal COPY/ADD/END.
+  - Detools sequential nếu dependency có sẵn.
+  - bsdiff reference.
+  - FULL artifact.
+
+Đo:
+  patch_size
+  create_time
+  apply_time host
+  estimated packet/airtime saving
+
+Sau đó compile C applier candidate cho ARM và đo:
+  `.text`
+  `.rodata`
+  `.bss`
+  stack/buffer requirement
+
+Gate:
+  - Application cùng update agent/applier vẫn <= 46 KB.
+  - Bootloader representative build vẫn <= 16 KB và không link applier.
+  - RAM bounded; không giữ old+new image trong SRAM.
+  - Nếu fail -> minimal Aegis streaming format.
+
+Điểm dừng:
+  - Có `Delta_Tool_Selection.md` ghi tool/version/license/format và lý do chọn.
+
+### 7.2. Delta package contract và W25Q32 layout
+
+File:
+  Shared/delta_format.h
+  Shared/memory_map.h
+  Application/Inc/delta_storage.h
+
+Tác dụng: khóa byte layout Delta manifest, ranh giới DELTA_DATA và API storage
+liên quan; đây là persistent/wire contract, chưa phải thuật toán apply patch.
+
+DELTA AREA:
+  DELTA_MANIFEST: 0x080000 .. 0x080FFF, 4 KB.
+  DELTA_DATA:     0x081000 .. 0x0BFFFF, 252 KB.
+
+Delta manifest làm bốn việc:
+  1. Nhận diện package: magic, format, domain và algorithm/profile.
+  2. Bind đúng base -> target bằng version/size/SHA-512 hash.
+  3. Chứng minh DELTA_DATA đã nhận đủ và đúng bằng patch_size/patch_hash.
+  4. Là commit record persistent để reset không dùng patch ghi dở.
+
+Transaction manifest:
+  1. Erase DELTA_MANIFEST trước khi nhận package mới; lúc này patch INVALID.
+  2. Ghi patch vào DELTA_DATA, hỗ trợ resume bằng bitmap 1152 bit.
+  3. Application tự tính SHA-512 toàn patch và so patch_hash đã được ký.
+  4. Ghi manifest body + delta signature, read-back và validate.
+  5. Ghi commit marker cuối cùng. Chỉ từ đây manifest/patch là VALID.
+
+Delta manifest/header phải có:
+  magic
+  format_version
+  algorithm_id
+  domain_field[20] = 19 byte `AEGIS-F103-DELTA-V1` + byte 0
+  artifact_id[8]
+  base_version
+  base_size
+  base_hash[64] = SHA-512(base firmware đúng base_size byte)
+  target_version
+  target_size
+  target_hash[64] = SHA-512(target firmware đúng target_size byte)
+  target_signed_header[32]
+  patch_size
+  patch_hash[64] = SHA-512(DELTA_DATA đúng patch_size byte)
+  target_signature[64]
+  delta_signature[64]
+  record_crc32
+  header_commit_marker
+  artifact_commit_marker
+  apply_started_marker
+  receive_bitmap[144]
+
+Quy tắc:
+  - Patch size phải <= DELTA_DATA size 0x3F000, không tính sector manifest.
+  - Target size phải <= APPLICATION_SIZE.
+  - Application tự tính base_hash trên Internal Application[0..base_size-1] và so
+    constant-time với base_hash trong manifest đã verify signature.
+  - Base version/size/CRC trong metadata phải đồng thời match; metadata một mình
+    không thay cho việc băm lại byte Application.
+  - Không apply patch nếu base không đúng byte identity.
+  - Patch chưa complete/commit không được dùng reconstruct.
+  - CRC bảo vệ record/storage corruption; delta_signature mới authenticate
+    manifest. `record_crc32` bao phủ canonical byte `[magic, record_crc32)`, gồm
+    cả delta_signature; chính CRC và marker không thuộc CRC. Artifact marker chỉ
+    ghi sau completeness/hash/signature PASS; apply marker ghi trước reconstruct.
+  - Canonical serialization dùng little-endian và static assert mọi offset/size.
+
+Điểm dừng:
+  - Host và C serialize/parse cùng byte layout; sửa base/target/patch hash,
+    algorithm, target signature hoặc delta signature đều bị từ chối.
+
+### 7.3. Host delta generator
+
+File:
+  tools/make_delta.py
+
+Tác dụng tool: tạo patch + Delta manifest trên PC, ký đúng domain và tự apply để
+chứng minh output trùng target trước khi artifact được phát hành.
+
+Input:
+  --base old.bin
+  --target new.bin
+  --target-signed-header ...
+  --target-signature ...
+  --private-key <release-key-path>
+  --output patch.aegisdelta
+
+Làm:
+  - Verify base/target size.
+  - Tính base_hash/target_hash bằng SHA-512 trên đúng số byte file.
+  - Tạo patch Aegis minimal COPY/ADD/END theo profile version 1.
+  - Tạo delta manifest.
+  - Tính patch_hash SHA-512 trên raw patch bytes.
+  - Tính delta signing prehash với domain `AEGIS-F103-DELTA-V1` và ký manifest
+    bằng Ed25519ph release private key. Private key không có default trong repo.
+  - Tự apply patch trên PC để chứng minh reconstructed == target byte-for-byte.
+  - Sau đó chạy verifier host Phase 3.4 trên target reconstructed.
+
+Test:
+  - deterministic metadata khi input/profile giống nhau.
+  - wrong base.
+  - corrupt patch.
+  - truncated patch.
+  - target reconstructed mismatch.
+  - patch lớn hơn FULL theo policy.
+
+Điểm dừng:
+  - `make_delta.py` không xuất artifact nếu self-check fail.
+
+### 7.4. Delta receive -> DELTA_DATA + commit DELTA_MANIFEST
+
+Làm:
+  - BEGIN_DELTA khai báo transfer ID + delta manifest identity.
+  - BEGIN_DELTA erase/invalidate DELTA_MANIFEST trước khi nhận patch mới.
+  - DATA_DELTA map offset vào DELTA_DATA, không ghi đè manifest sector.
+  - Resume tương tự Phase 5.
+  - Sau đủ byte, STM32 tự tính patch_hash SHA-512, verify delta manifest
+    Ed25519ph bằng release public key, write/read-back manifest body rồi mới ghi
+    commit marker cuối cùng.
+  - Không đụng STAGING trong lúc patch còn tải dở.
+
+Kiểm tra:
+  - duplicate/out-of-order/loss.
+  - reset giữa patch download.
+  - wrong patch hash.
+  - patch vượt slot.
+
+Điểm dừng:
+  - Chỉ manifest có commit marker + CRC + signature + patch hash đúng mới publish
+    patch VALID; patch complete tồn tại persistent và resume được.
+
+### 7.5. Streaming patch applier trên STM32
+
+File:
+  Application/Inc/delta_apply.h
+  Application/Src/delta_apply.c
+
+Tác dụng module: Application đọc base App + patch DELTA_DATA theo luồng nhỏ và
+reconstruct full target sang STAGING_IMAGE. Module không ghi Internal App;
+Bootloader chỉ nhận full target đã reconstruct để verify/install theo luồng FULL.
+
+Input:
+  - base reader: Internal Application.
+  - patch reader: W25Q32 DELTA_DATA.
+  - output writer: W25Q32 STAGING.
+
+Yêu cầu:
+  - Buffer nhỏ, ưu tiên 128/256 byte.
+  - Không malloc image-size.
+  - Tất cả offset/length check chống overflow.
+  - Patch opcode/record malformed phải fail đóng.
+  - Không write Internal App.
+  - STAGING được erase/prepare trước reconstruction.
+  - Read-back verify mỗi block theo storage contract.
+
+Thứ tự bắt đầu apply:
+  1. Load và validate committed delta manifest.
+  2. Verify delta manifest signature bằng release public key.
+  3. Tự tính/so patch_hash trên DELTA_DATA.
+  4. Tự tính/so base_hash trên đúng base_size byte Internal Application.
+  5. Commit apply-started marker trong Delta manifest.
+  6. Erase STAGING_IMAGE rồi streaming reconstruct trong Application.
+
+Power-loss policy baseline:
+  - Nếu reset khi apply marker tồn tại, không resume giữa opcode.
+  - Vì old App còn nguyên và patch đã commit, Application erase STAGING_IMAGE và
+    reconstruct lại từ đầu.
+  - Nếu manifest/patch/base invalid: Application invalidate Delta/Staging và giữ
+    App cũ; Internal metadata vẫn IDLE.
+  - Chỉ thêm apply-resume checkpoint nếu measurement chứng minh cần.
+
+Điểm dừng:
+  - old App + patch -> STAGING target byte-for-byte đúng với host target.
+
+### 7.6. Verify target rồi mới install
+
+Bắt buộc:
+  1. Reconstructed STAGING complete.
+  2. STM32 tự tính target_hash SHA-512 trên đúng target_size byte và so manifest.
+  3. `Firmware_SignedHeader_t` đúng.
+  4. Ed25519ph target signature PASS.
+  5. Version/target policy PASS.
+  6. Publish Staging artifact-valid marker, tạo/verify Backup.
+  7. Ghi UPDATE_READY và reset; Bootloader verify độc lập, commit
+     `INSTALL_IN_PROGRESS`, rồi reuse Phase 6 install/trial/rollback.
+
+Nếu target_hash/header/signature/version fail, không chuyển sang INSTALL. Erase/
+invalidate STAGING, giữ nguyên App cũ và trả status lỗi.
+
+Không được:
+  - coi delta package signature là thay thế target firmware signature.
+  - install từng page trực tiếp từ patch.
+  - erase old App trước khi full target đã verify.
+
+### 7.7. Delta P2P acceptance và policy FULL/DELTA
+
+Test:
+  - base đúng -> delta update PASS.
+  - base sai -> reject + offer FULL.
+  - patch corrupt/truncated -> reject.
+  - reconstructed target signature sai -> reject.
+  - reset khi nhận patch.
+  - reset khi reconstruct.
+  - reset trước/giữa install.
+  - delta lớn bất thường.
+
+Đo cùng dataset Phase 6:
+  full_bytes
+  delta_bytes
+  reduction_percent
+  packet_count
+  retry_count
+  total_time
+  airtime
+  energy nếu đo được
+
+Policy release:
+  - Host/Release chỉ chọn DELTA khi base identity match tuyệt đối.
+  - Chỉ chọn DELTA khi lợi ích vượt threshold đã chốt từ measurement.
+  - Nếu không -> FULL.
+  - Không generate delta cho mọi cặp version theo kiểu N^2; chỉ support một số
+    base release được policy giữ lại, ví dụ current + previous releases.
+
+Phase 7 DONE:
+  - Host tạo delta reproducible/self-checked.
+  - STM32 streaming apply không phá Bootloader/App memory budget.
+  - Delta P2P OTA end-to-end PASS.
+  - Full-image fallback vẫn PASS.
+
+
+## PHASE 8 — P2P FINAL ACCEPTANCE: RELEASE, FAULT, SECURITY VÀ RF/PERFORMANCE
+
+Mục tiêu phase:
+  Chốt Aegis-OTA P2P thành một project có thể build, ký, truyền FULL/DELTA qua hai
+  AS32, chịu fault, fail-closed trước input giả/sai và có evidence tái lập.
+
+Điều kiện mở Phase 8:
+  - Phase 6 FULL OTA P2P PASS.
+  - Phase 7 Delta OTA P2P PASS hoặc DELTA NOT USED với lý do rõ.
+  - W25Q32 board acceptance PASS.
+  - Trial/rollback path đã có evidence.
+  - AS32 production driver/profile đã được khóa.
+
+### 8.1. Reproducible release
+
+Pipeline:
+
+  build target
+    ->
+  sign FULL bằng `tools/sign_firmware.py`
+    ->
+  publish/store immutable FULL artifact
+    ->
+  tạo DELTA cho supported base bằng `tools/make_delta.py`
+    ->
+  host self-apply + verify
+    ->
+  publish/store immutable DELTA package
+
+Lưu:
+  - target version/hash/size;
+  - signer identity/key ID nếu dùng;
+  - FULL artifact hash;
+  - base identity cho từng DELTA;
+  - patch format/tool version/profile;
+  - FULL/DELTA size ratio.
+
+Không log/commit private key.
+
+### 8.2. FULL/DELTA selection policy
+
+Không tạo Delta cho mọi cặp version N^2.
+
+Policy baseline:
+  - exact base match + Delta hợp lệ + đủ lợi -> DELTA.
+  - base không match / patch không hợp lệ / lợi ích thấp -> FULL.
+  - device state do STM32/W25Q32 báo là source of truth.
+  - retry cùng immutable artifact phải idempotent.
+
+### 8.3. Fault matrix
+
+**Correction logic:** FAULT không phải persistent state.
+
+Fault injection chỉ gây reset/cắt nguồn/I/O/link failure. Sau reset, Bootloader đọc
+metadata và storage validity để quyết định continue/reconstruct/rollback/recovery.
+
+Reset/cắt nguồn tại:
+  - FULL staging.
+  - DELTA patch receive.
+  - DELTA manifest body/commit marker.
+  - commit Delta apply-started marker trong W25Q32.
+  - DELTA reconstruct.
+  - metadata A/B update.
+  - backup.
+  - commit `INSTALL_IN_PROGRESS`.
+  - Internal Flash erase/program.
+  - trial boot.
+  - commit `ROLLBACK_IN_PROGRESS`.
+  - rollback restore.
+  - final metadata commit.
+
+P2P/link faults:
+  - ngắt UART ESP32 <-> AS32 #1.
+  - reset ESP32.
+  - reset AS32 #1.
+  - reset AS32 #2.
+  - mất P2P.
+  - packet loss/duplicate/delay/reorder theo capability test.
+  - mất upstream link khi artifact đã cache.
+
+Terminal outcomes hợp lệ:
+  A. App cũ hợp lệ + metadata IDLE.
+  B. App mới verified/confirmed + metadata IDLE.
+  C. Recovery vì không còn image khôi phục an toàn.
+
+**Correction rollback:** rollback thành công phải:
+  ROLLBACK_IN_PROGRESS
+    -> restore BACKUP
+    -> verify restored App
+    -> commit old active version + IDLE
+    -> boot App cũ.
+
+Không mặc định `ROLLBACK -> RECOVERY`.
+
+### 8.4. Security negative
+
+Secure P2P:
+  - replay.
+  - sai SESSION_ID / FRAME_COUNTER.
+  - TAG sai.
+  - ciphertext/AAD bị sửa.
+  - length/range malformed.
+
+Delta:
+  - wrong base hash/version.
+  - base hash/metadata không khớp byte Internal Application thực.
+  - malformed opcode/record.
+  - offset/length overflow.
+  - truncated patch.
+  - patch hash sai.
+  - delta manifest/signature/domain sai.
+  - manifest chưa commit nhưng DELTA_DATA đã đủ.
+  - reconstructed target signature sai.
+
+FULL artifact:
+  - sửa SignedHeader/image/signature.
+  - wrong target.
+  - downgrade theo version policy.
+  - oversized image.
+
+Invariant:
+  Không case nào được boot image chưa target-verify.
+
+### 8.5. RF và performance acceptance
+
+Khóa và lưu đúng AS32 hardware/profile đang dùng:
+  - model/version/config bytes;
+  - UART baud/profile;
+  - channel/frequency/air-rate theo module;
+  - TX power setting;
+  - antenna/setup test;
+  - payload size;
+  - timeout/backoff/retry profile.
+
+Đo cùng dataset cho FULL và DELTA:
+  - artifact_bytes;
+  - radio_payload_bytes;
+  - packet_count;
+  - retry_count;
+  - total_time;
+  - throughput;
+  - success_rate;
+  - estimated airtime nếu tính được từ profile.
+
+Không dựa vào module default; profile release/test phải được lưu.
+
+### 8.6. Regression order
+
+  host crypto/storage
+    ->
+  signer FULL artifact
+    ->
+  W25Q32 board
+    ->
+  AS32 driver/P2P
+    ->
+  secure/reliable P2P
+    ->
+  P2P FULL OTA
+    ->
+  delta host generator/applier
+    ->
+  P2P DELTA OTA
+    ->
+  power-loss/security/RF-performance matrix
+
+### 8.7. Release evidence
+
+Lưu:
+  - toolchain versions;
+  - ELF/BIN/MAP/size;
+  - signed FULL artifact;
+  - Delta tool/version/profile;
+  - Delta package hashes;
+  - ESP32 + AS32 hardware/profile;
+  - expected outputs;
+  - serial/GDB logs;
+  - fault test IDs;
+  - final metadata state;
+  - final App hash/version.
+
+Kiểm:
+  - private key không có trong git/binary/log.
+  - hardware PENDING vẫn ghi PENDING, không biến compile thành PASS.
+  - README/Docs/CV chỉ claim feature đã có evidence.
+
+Phase 8 DONE:
+  - Người khác có thể build, ký, truyền FULL/DELTA qua P2P, quan sát verify/install/
+    trial/rollback và tái lập fault/security evidence.
+  - Final P2P project có release artifact + regression + benchmark/evidence rõ.
+
+## THỨ TỰ THỰC HIỆN TỪ TRẠNG THÁI HIỆN TẠI
+
+  SOURCE/BUILD/HOST MODEL: Phase 0, 3 PASS; source Phase 1–8 đã có.
+   |
+   v
+  1/2  Nghiệm thu Internal Flash + Metadata + W25Q32 trên board thật.
+   |
+   v
+  4    Bring-up hai AS32, khóa profile và đo P2P thô.
+   |
+   v
+  5    Chạy secure/reliable transport, loss/retry/resume qua RF thật.
+   |
+   v
+  6    FULL-image OTA end-to-end + Trial/Rollback/fault evidence.
+   |
+   v
+  7    DELTA OTA end-to-end và benchmark so với FULL.
+   |
+   v
+  8    Final fault/security/RF/performance/release acceptance.
+
+Không cần viết thêm source production trước các gate trên, trừ khi hardware test
+phát hiện lỗi. Đây là thứ tự nghiệm thu; trạng thái phải xem trong
+`roadmap-status.md`.
+
+## DEPENDENCY BẮT BUỘC
+
+- Phase 4 chỉ bắt đầu sau khi Phase 0–3 đạt acceptance tương ứng.
+- Phase 4 cần hardware profile đúng của cả hai AS32.
+- Phase 5 cần Phase 3 crypto + Phase 4.
+- Phase 6 cần Internal Flash + W25Q32 hardware + Phase 5.
+- Phase 7 cần full-image baseline Phase 6; host làm diff, STM32 chỉ apply.
+- Phase 8 cần FULL P2P PASS và Delta P2P PASS nếu Delta được giữ trong release profile.
+- Final DONE chỉ khi path production P2P thực sự dùng đã có negative/fault evidence.
+
+## MẪU GHI TIẾN ĐỘ
+
+  Step:               7.5 Streaming patch applier
+  Production files:   delta_apply.h/.c + delta_format.h
+  Host tool/profile:  Aegis COPY/ADD/END v1
+  Regression command: cmake --build --preset host-test --target phase7_run_host
+  Expected result:    reconstructed target == target.bin; signature PASS
+  ARM size:           text/rodata/bss + free Bootloader bytes
+  RAM budget:         stack + working buffers
+  Hardware status:    PASS / PENDING + lý do
+  Next step:          7.6 Verify target / 7.7 P2P delta acceptance
+
+
+## TÀI LIỆU/TOOL PHẢI PIN KHI IMPLEMENT
+
+LoRa P2P / AS32:
+  - Datasheet/manual đúng model `AS32-TTL-100-C`.
+  - Ghi firmware/version/config bytes thực đọc từ từng module.
+  - Pin hardware profile dùng cho release/test: UART baud, channel/frequency,
+    air-rate, TX power, AUX/mode behavior và payload/timeout profile.
+  - Không dựa vào module default hoặc một tutorial ngoài repo làm production contract.
+
+Delta:
+  - Baseline production của repository là Aegis COPY/ADD/END v1.
+  - Detools có thể dùng làm benchmark host nếu được pin version/license; không
+    được tự đổi persistent format hoặc kéo dependency vào firmware.
+  - bsdiff:
+    https://github.com/mendsley/bsdiff
+    Dùng reference/benchmark; classic format/applier không mặc định được chọn cho STM32.
+  - Mọi third-party code được vendor phải pin version/commit, giữ LICENSE/UPSTREAM.
+
+Crypto:
+  - Monocypher pin đúng version/commit đã chốt trong repository.
+  - Giữ LICENSE/UPSTREAM và regression vectors tương ứng version đó.
+
+Các URL chỉ là điểm bắt đầu. Production phải pin version/commit/profile cụ thể trong
+repo và regression; không để behavior OTA thay đổi vì tool ngoài repo tự update.

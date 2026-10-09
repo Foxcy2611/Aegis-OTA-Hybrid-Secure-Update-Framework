@@ -1,0 +1,21 @@
+ESP32 + AS32
+      │ LoRa P2P
+      ▼
+STM32 Application
+      │
+      ├─ nhận từng fragment
+      ├─ ghi Staging trên W25Q32
+      ├─ read-back và lưu progress
+      ├─ kiểm tra sơ bộ firmware
+      ├─ chuẩn bị Backup App hiện tại
+      ├─ ghi UPDATE_READY vào mailbox
+      └─ reset
+             ↓
+STM32 Bootloader
+      ├─ đọc Metadata A/B
+      ├─ đọc mailbox
+      ├─ verify lại Staging và Backup độc lập
+      ├─ commit INSTALL_IN_PROGRESS
+      ├─ ghi firmware từ Staging vào Internal Flash
+      ├─ bật Trial Boot
+      └─ chạy Application mới

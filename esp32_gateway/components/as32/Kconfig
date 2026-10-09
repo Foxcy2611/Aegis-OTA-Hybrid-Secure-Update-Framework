@@ -1,0 +1,41 @@
+menu "Aegis AS32 hardware"
+
+    config AEGIS_AS32_UART_PORT
+        int "UART controller"
+        range 0 2
+        default 2
+        help
+            UART2 được dành cho AS32; UART0 giữ cho log/flash.
+
+    config AEGIS_AS32_UART_BAUD
+        int "AS32 UART baud"
+        default 9600
+        help
+            Contract Phase 4 là 9600 8N1 ở cả hai module.
+
+    config AEGIS_AS32_TX_PIN
+        int "ESP32 TX -> AS32 RX"
+        range 0 39
+        default 17
+
+    config AEGIS_AS32_RX_PIN
+        int "ESP32 RX <- AS32 TX"
+        range 0 39
+        default 16
+
+    config AEGIS_AS32_MD0_PIN
+        int "AS32 MD0 GPIO"
+        range 0 39
+        default 25
+
+    config AEGIS_AS32_MD1_PIN
+        int "AS32 MD1 GPIO"
+        range 0 39
+        default 26
+
+    config AEGIS_AS32_AUX_PIN
+        int "AS32 AUX GPIO"
+        range 0 39
+        default 27
+
+endmenu

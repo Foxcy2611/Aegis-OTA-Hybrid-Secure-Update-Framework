@@ -1,0 +1,27 @@
+* Configure
+    cmake --preset debug
+
+    Lệnh này:
+        - đọc CMakePresets.json;
+        - chọn Ninja;
+        - chọn arm-none-eabi-gcc;
+        - đọc toàn bộ CMakeLists.txt;
+        - tạo kế hoạch build trong build/debug/.
+    - Nó chưa nhất thiết compile source.
+
+    - Thông thường chỉ cần chạy khi:
+        - build lần đầu;
+        - sửa CMake;
+        - đổi cấu hình;
+        - vừa lấy project về máy mới.
+
+* Build
+    cmake --build --preset debug
+
+    - Lệnh này bảo Ninja thực hiện kế hoạch vừa tạo. Preset Debug hiện gọi target firmware, nên nó build cả:
+        - aegis_bootloader;
+        - aegis_application.
+
+- Nếu chỉ sửa source C, thường chỉ cần chạy lại:
+    cmake --build --preset debug
+CMake sẽ tự phát hiện file nào cần compile lại.
